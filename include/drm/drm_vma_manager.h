@@ -144,7 +144,7 @@ static inline void drm_vma_offset_unlock_lookup(struct drm_vma_offset_manager *m
  * This must not be called on an already allocated node, or you will leak
  * memory.
  */
-static inline void drm_vma_node_reset(struct drm_vma_offset_node *node)
+	static inline void drm_vma_node_reset(struct drm_vma_offset_node *node)
 {
 	memset(node, 0, sizeof(*node));
 	node->vm_files = RB_ROOT;

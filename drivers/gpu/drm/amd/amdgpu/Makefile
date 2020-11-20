@@ -189,6 +189,9 @@ endif
 
 endif
 
+amdgpu-y += amdgpu_mdev.o \
+	    amdgpu_mdev_drv.o
+
 # add cgs
 amdgpu-y += amdgpu_cgs.o
 

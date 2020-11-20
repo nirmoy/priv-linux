@@ -613,6 +613,7 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 	uint64_t vm_size;
 	int r = 0;
 
+	printk("here 1\n");
 	if (args->va_address < AMDGPU_VA_RESERVED_SIZE) {
 		dev_dbg(&dev->pdev->dev,
 			"va_address 0x%LX is in reserved area 0x%LX\n",
@@ -620,6 +621,7 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 		return -EINVAL;
 	}
 
+	printk("here 2\n");
 	if (args->va_address >= AMDGPU_GMC_HOLE_START &&
 	    args->va_address < AMDGPU_GMC_HOLE_END) {
 		dev_dbg(&dev->pdev->dev,
@@ -646,6 +648,7 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 		return -EINVAL;
 	}
 
+	printk("here 3\n");
 	switch (args->operation) {
 	case AMDGPU_VA_OP_MAP:
 	case AMDGPU_VA_OP_UNMAP:
@@ -677,6 +680,7 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 		abo = NULL;
 	}
 
+	printk("here 4\n");
 	amdgpu_vm_get_pd_bo(&fpriv->vm, &list, &vm_pd);
 
 	r = ttm_eu_reserve_buffers(&ticket, &list, true, &duplicates);
@@ -695,7 +699,9 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 		bo_va = NULL;
 	}
 
+	printk("here 5\n");
 	switch (args->operation) {
+	printk("here  %u\n", args->operation);
 	case AMDGPU_VA_OP_MAP:
 		va_flags = amdgpu_gem_va_map_flags(adev, args->flags);
 		r = amdgpu_vm_bo_map(adev, bo_va, args->va_address,
@@ -724,6 +730,7 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 		amdgpu_gem_va_update_vm(adev, &fpriv->vm, bo_va,
 					args->operation);
 
+	printk("here 6\n");
 error_backoff:
 	ttm_eu_backoff_reservation(&ticket, &list);
 
