@@ -26,9 +26,9 @@ struct guest_ioctl {
 	unsigned int cmd;
 	bool ioctl_completed;
 	void __user *ioctl_out_ptr;
-	u32 return_size;
+	u32 size;
 	pid_t id;
-	u32 bo_offset;
+	u64 offset;
 };
 
 #endif

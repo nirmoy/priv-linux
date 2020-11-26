@@ -25,6 +25,7 @@
 #include <linux/mdev.h>
 #include <linux/pci.h>
 #include <linux/eventfd.h>
+#include <linux/hashtable.h>
 
 #include "amdgpu_mdev_common.h"
 #include "amdgpu.h"
@@ -87,6 +88,15 @@ struct amdgpu_mdev_guest_process {
 	pid_t id;
 };
 
+struct offset_key {
+	struct hlist_node hnode;
+	u64 offset;
+	u32 size;
+	uint32_t handle;
+	struct drm_file *filp;
+
+};
+
 /* State of each mdev device */
 struct mdev_state {
 	struct mdev_device	*mdev;
@@ -108,6 +118,7 @@ struct mdev_state {
 	u8			*vconfig;
 	pgoff_t			pagecount;
 	u32			bar_mask[VFIO_PCI_NUM_REGIONS];
+	DECLARE_HASHTABLE(offset_htable, 16);
 };
 
 static void amdgpu_mdev_trigger_interrupt(struct mdev_state *mdev_state)
@@ -259,6 +270,7 @@ static int amdgpu_mdev_create(struct kobject *kobj, struct mdev_device *mdev)
 	mdev_state->stolen_vram.size = AMDGPU_MDEV_APERTURE_SIZE;
 
 	mutex_init(&mdev_state->ops_lock);
+	hash_init(mdev_state->offset_htable);
 	mdev_set_drvdata(mdev, mdev_state);
 	idr_init(&mdev_state->fpriv_handles);
 
@@ -409,38 +421,49 @@ static int handle_guest_cmd(struct mdev_state *mdev_state)
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE: {
+		union drm_amdgpu_gem_create *args = data;
+		struct offset_key *key = kzalloc(sizeof(struct offset_key), GFP_KERNEL);
+
 		r = amdgpu_gem_create_ioctl(ddev, data, filp);
+
 		printk("amdgpu_gem_create_ioctl ret = %d\n", r);
+		key->offset = cmd->offset;
+		key->size - cmd->size;
+		key->handle = args->out.handle;
+		key->filp = filp;
+		r = amdgpu_gem_mmap_ioctl(ddev, data, filp);
+		hash_add(mdev_state->offset_htable, &key->hnode, key->offset);
+
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_VM: {
 		r = amdgpu_vm_ioctl(ddev, data, filp);
-		printk("amdgpu_gem_va_ioctl ret = %d\n", r);
+		printk("amdgpu_vm_ioctl ret = %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_BO_LIST: {
 		r = amdgpu_bo_list_ioctl(ddev, data, filp);
-		printk("AMDGPU_GUEST_CMD_IOCTL_VM %d\n", r);
+		printk("amdgpu_bo_list_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_CS: {
 		r = amdgpu_cs_ioctl(ddev, data, filp);
-		printk("AMDGPU_GUEST_CMD_IOCTL_VM %d\n", r);
+		printk("amdgpu_cs_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_GEM_VA: {
 		r = amdgpu_gem_va_ioctl(ddev, data, filp);
-		printk("AMDGPU_GUEST_CMD_IOCTL_VM %d\n", r);
+		printk("amdgpu_gem_va_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_GEM_MMAP: {
 		r = amdgpu_gem_mmap_ioctl(ddev, data, filp);
-		printk("AMDGPU_GUEST_CMD_IOCTL_GEM_MMAP %d\n", r);
+		printk("amdgpu_gem_mmap_ioctl  %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
@@ -957,6 +980,16 @@ static long amdgpu_ioctl(struct mdev_device *mdev, unsigned int cmd,
 	return -ENOTTY;
 }
 
+static struct offset_key *get_offset_key(struct mdev_state *mdev_state, u64 offset)
+{
+	struct offset_key *key = NULL;
+
+	hash_for_each_possible(mdev_state->offset_htable, key, hnode, key)
+		return key;
+	return key;
+}
+
+
 static vm_fault_t amdgpu_mdev_bar0_vm_fault(struct vm_fault *vmf)
 {
 	struct page *page;
@@ -968,11 +1001,30 @@ static vm_fault_t amdgpu_mdev_bar0_vm_fault(struct vm_fault *vmf)
 	pgoff_t page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 	unsigned long vm_pgoff = vma->vm_pgoff &
 		((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
+	struct offset_key *key = get_offset_key(mdev_state, page_offset);
+	struct drm_gem_object	*gobj = NULL;
+	struct amdgpu_bo *abo = NULL;
 
+	if (key) {
+		gobj = drm_gem_object_lookup(key->filp, key->handle);
+		if (gobj) {
+			printk("got gobj\n");
+			abo = gem_to_amdgpu_bo(gobj);
+			if (abo != NULL) {
+				bo = &abo->tbo;
+				ttm = bo->ttm;
+				printk("got ttm tbo %p %p\n", ttm, bo);
+			}
+		}
+
+		printk("found offset_key %llu\n", page_offset);
+	}
 
 	printk("amdgpu_mdev_bar0_vm_fault %lu %llu %p\n", page_offset, vmf->address, ttm);
-	if (bo->mem.bus.is_iomem)
+	if (bo->mem.bus.is_iomem) {
+		printk("before getting pfn %p\n", bo);
 		pfn = ttm_bo_io_mem_pfn(bo, page_offset);
+	}
 	else
 		pfn = page_to_pfn(ttm->pages[page_offset]);
 

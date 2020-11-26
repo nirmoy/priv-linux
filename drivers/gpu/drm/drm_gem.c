@@ -1126,6 +1126,7 @@ int drm_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 	struct drm_vma_offset_node *node;
 	int ret;
 
+	printk("drm_gem_mmap got called \n");
 	if (drm_dev_is_unplugged(dev))
 		return -ENODEV;
 
