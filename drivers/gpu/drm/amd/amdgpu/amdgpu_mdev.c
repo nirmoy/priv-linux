@@ -94,6 +94,11 @@ struct offset_key {
 	u32 size;
 	uint32_t handle;
 	struct drm_file *filp;
+	struct amdgpu_bo	*bo;
+	struct drm_gem_object	*gobj;
+	u64			gpu_addr;
+	void			*cpu_addr;
+
 
 };
 
@@ -372,11 +377,60 @@ free_gproc:
 	return r;
 }
 
+int _amdgpu_bo_list_ioctl(struct drm_device *dev,
+			  struct drm_amdgpu_bo_list_entry *info,
+			  union drm_amdgpu_bo_list *args,
+			  struct drm_file *filp);
+
 int amdgpu_ctx_ioctl(struct drm_device *dev, void *data,
 		     struct drm_file *filp);
 int amdgpu_gem_create_ioctl(struct drm_device *dev, void *data,
 			    struct drm_file *filp);
-int _amdgpu_info_ioctl(struct drm_device *dev, struct drm_amdgpu_info *info, struct drm_file *filp, void* out);
+int _amdgpu_info_ioctl(struct drm_device *dev, struct drm_amdgpu_info *info,
+		       struct drm_file *filp, void* out);
+int amdgpu_mdev_bo_create_list_entry_array(struct drm_amdgpu_bo_list_in *in,
+				      struct drm_amdgpu_bo_list_entry **info_param)
+{
+	const void  *uptr = in->bo_info_ptr;
+	const uint32_t info_size = sizeof(struct drm_amdgpu_bo_list_entry);
+	struct drm_amdgpu_bo_list_entry *info;
+	int r;
+
+	info = kvmalloc_array(in->bo_number, info_size, GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+
+	/* copy the handle array from userspace to a kernel buffer */
+	r = -EFAULT;
+	if (likely(info_size == in->bo_info_size)) {
+		unsigned long bytes = in->bo_number *
+			in->bo_info_size;
+
+		if (copy_from_user(info, uptr, bytes))
+			goto error_free;
+
+	} else {
+		unsigned long bytes = min(in->bo_info_size, info_size);
+		unsigned i;
+
+		memset(info, 0, in->bo_number * info_size);
+		for (i = 0; i < in->bo_number; ++i) {
+			if (copy_from_user(&info[i], uptr, bytes))
+				goto error_free;
+
+			uptr += in->bo_info_size;
+		}
+	}
+
+	*info_param = info;
+	return 0;
+
+error_free:
+	kvfree(info);
+	return r;
+}
+
+
 static int handle_guest_cmd(struct mdev_state *mdev_state)
 {
 	int r;
@@ -429,9 +483,30 @@ static int handle_guest_cmd(struct mdev_state *mdev_state)
 		printk("amdgpu_gem_create_ioctl ret = %d\n", r);
 		key->offset = cmd->offset;
 		key->size - cmd->size;
-		key->handle = args->out.handle;
 		key->filp = filp;
-		r = amdgpu_gem_mmap_ioctl(ddev, data, filp);
+		key->bo = NULL;
+		r = amdgpu_bo_create_kernel(mdev_state->adev, key->size, PAGE_SIZE,
+					    AMDGPU_GEM_DOMAIN_VRAM,
+					    &key->bo,
+					    &key->gpu_addr,
+					    &key->cpu_addr);
+		if (r)
+			printk("failed to reserve VRAM\n");
+		else {
+			printk("allocated bo %p, cpu %p, gpu %llu size %llu\n",
+			       key->bo,
+			       key->cpu_addr,
+			       key->gpu_addr,
+			       key->size);
+		}
+		key->gobj = &key->bo->tbo.base;
+		printk(" gem_object %p", key->bo->tbo.base);
+		r = drm_gem_handle_create(filp, key->gobj, &key->handle);
+		/* drop reference from allocate - handle holds it now */
+		//drm_gem_object_put(key->gobj);
+		memset(args, 0, sizeof(*args));
+		args->out.handle = key->handle;
+
 		hash_add(mdev_state->offset_htable, &key->hnode, key->offset);
 
 		amdgpu_mdev_trigger_interrupt(mdev_state);
@@ -444,7 +519,18 @@ static int handle_guest_cmd(struct mdev_state *mdev_state)
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_BO_LIST: {
-		r = amdgpu_bo_list_ioctl(ddev, data, filp);
+		struct drm_amdgpu_bo_list_entry *info = NULL;
+		union drm_amdgpu_bo_list *args = data;
+
+		r = amdgpu_mdev_bo_create_list_entry_array(&args->in, &info);
+		if (r) {
+			printk("amdgpu_mdev_bo_create_list_entry_array FAILED %d\n", r);
+			amdgpu_mdev_trigger_interrupt(mdev_state);
+			break;
+		}
+
+		r = _amdgpu_bo_list_ioctl(ddev, info, args, filp);
+
 		printk("amdgpu_bo_list_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
@@ -984,7 +1070,7 @@ static struct offset_key *get_offset_key(struct mdev_state *mdev_state, u64 offs
 {
 	struct offset_key *key = NULL;
 
-	hash_for_each_possible(mdev_state->offset_htable, key, hnode, key)
+	hash_for_each_possible(mdev_state->offset_htable, key, hnode, offset)
 		return key;
 	return key;
 }
@@ -999,28 +1085,19 @@ static vm_fault_t amdgpu_mdev_bar0_vm_fault(struct vm_fault *vmf)
 	struct ttm_buffer_object *bo = &mdev_state->stolen_vram.bo->tbo;
 	struct ttm_tt *ttm = bo->ttm;
 	pgoff_t page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
-	unsigned long vm_pgoff = vma->vm_pgoff &
-		((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
+	//unsigned long vm_pgoff = vma->vm_pgoff &
+	//	((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
 	struct offset_key *key = get_offset_key(mdev_state, page_offset);
-	struct drm_gem_object	*gobj = NULL;
-	struct amdgpu_bo *abo = NULL;
 
 	if (key) {
-		gobj = drm_gem_object_lookup(key->filp, key->handle);
-		if (gobj) {
-			printk("got gobj\n");
-			abo = gem_to_amdgpu_bo(gobj);
-			if (abo != NULL) {
-				bo = &abo->tbo;
-				ttm = bo->ttm;
-				printk("got ttm tbo %p %p\n", ttm, bo);
-			}
-		}
+		bo = &key->bo->tbo;
+		ttm = bo->ttm;
 
-		printk("found offset_key %llu\n", page_offset);
+		printk("got ttm tbo %p %p\n", ttm, bo);
+		printk("found offset_key %lu\n", page_offset);
 	}
 
-	printk("amdgpu_mdev_bar0_vm_fault %lu %llu %p\n", page_offset, vmf->address, ttm);
+	printk("amdgpu_mdev_bar0_vm_fault %lu %lu %p\n", page_offset, vmf->address, ttm);
 	if (bo->mem.bus.is_iomem) {
 		printk("before getting pfn %p\n", bo);
 		pfn = ttm_bo_io_mem_pfn(bo, page_offset);
