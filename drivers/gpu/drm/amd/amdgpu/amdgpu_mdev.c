@@ -431,13 +431,12 @@ error_free:
 }
 
 
-static int handle_guest_cmd(struct mdev_state *mdev_state)
+int handle_guest_cmd(struct mdev_state *mdev_state)
 {
 	int r;
 	get_page(mdev_state->bar2_page);
 	char *map = kmap(mdev_state->bar2_page);
 	struct guest_ioctl *cmd = (struct guest_ioctl *)map;
-	loff_t poff = sizeof(struct guest_ioctl) + sizeof(struct drm_amdgpu_info);
 	struct amdgpu_mdev_guest_process *gproc;
 	struct drm_device *ddev = &mdev_state->adev->ddev;
 	struct drm_file *filp;
@@ -449,6 +448,7 @@ static int handle_guest_cmd(struct mdev_state *mdev_state)
 	}
 
 
+	printk("cmd %d off set %llu size %u\n", cmd->cmd, cmd->offset, cmd->size);
 	switch(cmd->cmd) {
 	case AMDGPU_GUEST_CMD_OPEN_KMS:
 		printk("handling AMDGPU_GUEST_CMD_OPEN_KMS %u\n", cmd->id);
@@ -456,6 +456,7 @@ static int handle_guest_cmd(struct mdev_state *mdev_state)
 		break;
 	case AMDGPU_GUEST_CMD_IOCTL_INFO: {
 		struct drm_amdgpu_info *info = (void *)map + sizeof(struct guest_ioctl);
+		loff_t poff = sizeof(struct guest_ioctl) + sizeof(struct drm_amdgpu_info);
 
 		info->return_pointer = map + poff;
 		memset((void *)info->return_pointer, '\0', info->return_size);
@@ -478,11 +479,11 @@ static int handle_guest_cmd(struct mdev_state *mdev_state)
 		union drm_amdgpu_gem_create *args = data;
 		struct offset_key *key = kzalloc(sizeof(struct offset_key), GFP_KERNEL);
 
-		r = amdgpu_gem_create_ioctl(ddev, data, filp);
+		//r = amdgpu_gem_create_ioctl(ddev, data, filp);
 
 		printk("amdgpu_gem_create_ioctl ret = %d\n", r);
 		key->offset = cmd->offset;
-		key->size - cmd->size;
+		key->size = cmd->size;
 		key->filp = filp;
 		key->bo = NULL;
 		r = amdgpu_bo_create_kernel(mdev_state->adev, key->size, PAGE_SIZE,
@@ -493,7 +494,7 @@ static int handle_guest_cmd(struct mdev_state *mdev_state)
 		if (r)
 			printk("failed to reserve VRAM\n");
 		else {
-			printk("allocated bo %p, cpu %p, gpu %llu size %llu\n",
+			printk("allocated bo %p, cpu %p, gpu %llu sizea %llu\n",
 			       key->bo,
 			       key->cpu_addr,
 			       key->gpu_addr,
@@ -501,11 +502,6 @@ static int handle_guest_cmd(struct mdev_state *mdev_state)
 		}
 		key->gobj = &key->bo->tbo.base;
 		printk(" gem_object %p", key->bo->tbo.base);
-		r = drm_gem_handle_create(filp, key->gobj, &key->handle);
-		/* drop reference from allocate - handle holds it now */
-		//drm_gem_object_put(key->gobj);
-		memset(args, 0, sizeof(*args));
-		args->out.handle = key->handle;
 
 		hash_add(mdev_state->offset_htable, &key->hnode, key->offset);
 
@@ -605,6 +601,7 @@ ssize_t amdgpu_mdev_access(struct mdev_device *mdev, char *buf, size_t count,
 		break;
 	}
 	case VFIO_PCI_BAR2_REGION_INDEX: {
+		printk("accessing bar2\n");
 		pg = mdev_state->bar2_page;
 		get_page(pg);
 		poff = pos & ~PAGE_MASK;
@@ -1089,7 +1086,7 @@ static vm_fault_t amdgpu_mdev_bar0_vm_fault(struct vm_fault *vmf)
 	//	((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
 	struct offset_key *key = get_offset_key(mdev_state, page_offset);
 
-	if (key) {
+	if (key && page_offset) {
 		bo = &key->bo->tbo;
 		ttm = bo->ttm;
 

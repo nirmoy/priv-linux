@@ -289,6 +289,7 @@ static int amdgpu_mdev_gem_ioctl(struct drm_device *dev, void *data, struct drm_
 	struct guest_ioctl cmd;
 	struct drm_gem_vram_object *gbo;
 	union drm_amdgpu_gem_create *args = (union drm_amdgpu_gem_create *) data;
+	u32 handle;
 
 	args->in.bo_size = ALIGN(args->in.bo_size, PAGE_SIZE);
 	printk("allocating %llu\n", args->in.bo_size);
@@ -299,7 +300,15 @@ static int amdgpu_mdev_gem_ioctl(struct drm_device *dev, void *data, struct drm_
 		printk("VRAM pinning failed\n");
 		return ret;
 	}
+	ret = drm_gem_handle_create(filp, &gbo->bo.base, &handle);
+	if (ret) {
+		printk("unable to create handle\n");
+		return ret;
+	}
 	cmd.offset = drm_gem_vram_offset(gbo);
+	cmd.size = args->in.bo_size;
+	cmd.handle = handle;
+	printk("sending offset %lu and size %lu\n", cmd.offset, cmd.size);
 	amdgpu_mdev_prepare_cmd(&cmd, AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE);
 	printk("doing AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE \n");
 	kfifo_in(&amdgpu_dev_mdev.ioctl_reqs, &cmd, sizeof(struct guest_ioctl));
@@ -315,9 +324,7 @@ static int amdgpu_mdev_gem_ioctl(struct drm_device *dev, void *data, struct drm_
 	ret = sizeof(cmd);
 	memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_gem_create));
 	memset(args, 0, sizeof(*args));
-	ret = drm_gem_handle_create(filp, &gbo->bo.base, &args->out.handle);
-	if (ret)
-		printk("failed to create handle");
+	args->out.handle = handle;
 	return 0;
 
 }
