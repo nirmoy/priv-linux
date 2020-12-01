@@ -1495,7 +1495,7 @@ int amdgpu_cs_fence_to_handle_ioctl(struct drm_device *dev, void *data,
  * @wait: wait parameters
  * @fences: array of drm_amdgpu_fence
  */
-static int amdgpu_cs_wait_all_fences(struct amdgpu_device *adev,
+int amdgpu_cs_wait_all_fences(struct amdgpu_device *adev,
 				     struct drm_file *filp,
 				     union drm_amdgpu_wait_fences *wait,
 				     struct drm_amdgpu_fence *fences)
@@ -1540,7 +1540,7 @@ static int amdgpu_cs_wait_all_fences(struct amdgpu_device *adev,
  * @wait: wait parameters
  * @fences: array of drm_amdgpu_fence
  */
-static int amdgpu_cs_wait_any_fence(struct amdgpu_device *adev,
+int amdgpu_cs_wait_any_fence(struct amdgpu_device *adev,
 				    struct drm_file *filp,
 				    union drm_amdgpu_wait_fences *wait,
 				    struct drm_amdgpu_fence *fences)

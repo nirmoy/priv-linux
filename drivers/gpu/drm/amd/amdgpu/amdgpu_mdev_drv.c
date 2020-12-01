@@ -23,13 +23,23 @@
 #define KMS_DRIVER_MINOR	40
 #define KMS_DRIVER_PATCHLEVEL	0
 
-#define IOCTL_TIMEOUT		msecs_to_jiffies(2000)
+#define IOCTL_TIMEOUT		msecs_to_jiffies(200)
 struct amdgpu_mdev {
 	void  *bar0_base;
 	u32    *mmio;
 	wait_queue_head_t ioctl_wait;
 	struct kfifo ioctl_reqs;
+	DECLARE_HASHTABLE(offset_htable, 16);
 };
+
+struct offset_key {
+	struct hlist_node hnode;
+	uint32_t local_handle;
+	uint32_t remote_handle;
+
+
+};
+
 
 struct amdgpu_mdev amdgpu_dev_mdev;
 
@@ -160,6 +170,13 @@ static int amdgpu_mdev_bo_list_ioctl(struct drm_device *dev, void *data, struct 
 {
 	int ret = 0;
 	struct guest_ioctl cmd;
+	union drm_amdgpu_bo_list *args = data;
+	struct drm_amdgpu_bo_list_in *in = &args->in;
+	const uint32_t info_size = sizeof(struct drm_amdgpu_bo_list_entry);
+	const void __user *uptr = u64_to_user_ptr(args->in.bo_info_ptr);
+	struct drm_amdgpu_bo_list_entry *info = amdgpu_dev_mdev.bar0_base
+		+ sizeof(struct guest_ioctl)
+		+ sizeof(union drm_amdgpu_bo_list);
 
 	amdgpu_mdev_prepare_cmd(&cmd, AMDGPU_GUEST_CMD_IOCTL_BO_LIST);
 	printk("doing AMDGPU_GUEST_CMD_IOCTL_BO_LIST \n");
@@ -168,6 +185,30 @@ static int amdgpu_mdev_bo_list_ioctl(struct drm_device *dev, void *data, struct 
 	memcpy(amdgpu_dev_mdev.bar0_base + sizeof(struct guest_ioctl),
 	       data, sizeof(union drm_amdgpu_bo_list));
 	memcpy(amdgpu_dev_mdev.bar0_base, &cmd, sizeof(struct guest_ioctl));
+	ret = -EFAULT;
+	if (likely(info_size == args->in.bo_info_size)) {
+		printk("amdgpu_mdev_bo_list_ioctl trying to copy one bo\n");
+		unsigned long bytes = in->bo_number *
+			in->bo_info_size;
+
+		if (copy_from_user(info, uptr, bytes))
+			return ret;
+
+	} else {
+		unsigned long bytes = min(in->bo_info_size, info_size);
+		unsigned i;
+		printk("amdgpu_mdev_bo_list_ioctl trying to copy %u bo\n", in->bo_number);
+
+		memset(info, 0, in->bo_number * info_size);
+		for (i = 0; i < in->bo_number; ++i) {
+			if (copy_from_user(&info[i], uptr, bytes))
+				return ret;
+
+			uptr += in->bo_info_size;
+		}
+	}
+
+
 	amdgpu_mdev_ring_doorbell();
 	ret = wait_event_timeout(amdgpu_dev_mdev.ioctl_wait,
 				 &cmd.ioctl_completed,
@@ -175,7 +216,8 @@ static int amdgpu_mdev_bo_list_ioctl(struct drm_device *dev, void *data, struct 
 	if (!ret)
 		printk("timed out \n");
 	ret = sizeof(cmd);
-	memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_sched));
+	memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_bo_list));
+	printk("done AMDGPU_GUEST_CMD_IOCTL_BO_LIST \n");
 	return 0;
 
 }
@@ -224,9 +266,20 @@ static int amdgpu_mdev_gem_va_ioctl(struct drm_device *dev, void *data, struct d
 		printk("timed out \n");
 	ret = sizeof(cmd);
 	memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(struct drm_amdgpu_gem_va));
+	printk("done AMDGPU_GUEST_CMD_IOCTL_GEM_VA \n");
 	return 0;
 
 }
+
+static struct offset_key *get_handle_key(u32 remote_handle)
+{
+	struct offset_key *key = NULL;
+
+	hash_for_each_possible(amdgpu_dev_mdev.offset_htable, key, hnode, remote_handle)
+		return key;
+	return key;
+}
+
 
 static int amdgpu_mdev_gem_mmap_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 {
@@ -236,7 +289,15 @@ static int amdgpu_mdev_gem_mmap_ioctl(struct drm_device *dev, void *data, struct
 	struct drm_gem_vram_object *gbo;
 	union drm_amdgpu_gem_mmap *args = data;
 
-	gobj = drm_gem_object_lookup(filp, args->in.handle);
+	struct offset_key *key = get_handle_key(args->in.handle);
+
+	if (!key) {
+		printk("amdgpu_mdev_gem_mmap_ioctl failed to get key\n");
+		return -1;
+	}
+
+	printk("handle recv %u local %u\n", key->remote_handle, key->local_handle);
+	gobj = drm_gem_object_lookup(filp, key->local_handle);
 	gbo = drm_gem_vram_of_gem(gobj);
 	amdgpu_mdev_prepare_cmd(&cmd, AMDGPU_GUEST_CMD_IOCTL_GEM_MMAP);
 	printk("doing AMDGPU_GUEST_CMD_IOCTL_GEM_MMAP \n");
@@ -254,6 +315,7 @@ static int amdgpu_mdev_gem_mmap_ioctl(struct drm_device *dev, void *data, struct
 	ret = sizeof(cmd);
 	args->out.addr_ptr = drm_vma_node_offset_addr(&gobj->vma_node);
 	printk("Mapping %llu\n", args->out.addr_ptr);
+	printk("done AMDGPU_GUEST_CMD_IOCTL_GEM_MMAP \n");
 	//memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_gem_mmap));
 	return 0;
 
@@ -290,7 +352,9 @@ static int amdgpu_mdev_gem_ioctl(struct drm_device *dev, void *data, struct drm_
 	struct drm_gem_vram_object *gbo;
 	union drm_amdgpu_gem_create *args = (union drm_amdgpu_gem_create *) data;
 	u32 handle;
+	struct offset_key *key = kzalloc(sizeof(struct offset_key), GFP_KERNEL);
 
+	printk("doing AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE \n");
 	args->in.bo_size = ALIGN(args->in.bo_size, PAGE_SIZE);
 	printk("allocating %llu\n", args->in.bo_size);
 	gbo = drm_gem_vram_create(dev, args->in.bo_size, 0);
@@ -310,7 +374,6 @@ static int amdgpu_mdev_gem_ioctl(struct drm_device *dev, void *data, struct drm_
 	cmd.handle = handle;
 	printk("sending offset %lu and size %lu\n", cmd.offset, cmd.size);
 	amdgpu_mdev_prepare_cmd(&cmd, AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE);
-	printk("doing AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE \n");
 	kfifo_in(&amdgpu_dev_mdev.ioctl_reqs, &cmd, sizeof(struct guest_ioctl));
 	memcpy(amdgpu_dev_mdev.bar0_base + sizeof(struct guest_ioctl),
 	       data, sizeof(union drm_amdgpu_gem_create));
@@ -323,8 +386,11 @@ static int amdgpu_mdev_gem_ioctl(struct drm_device *dev, void *data, struct drm_
 		printk("timed out \n");
 	ret = sizeof(cmd);
 	memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_gem_create));
-	memset(args, 0, sizeof(*args));
-	args->out.handle = handle;
+	printk("handle recv %u local %u\n", args->out.handle, handle);
+	key->local_handle = handle;
+	key->remote_handle = args->out.handle;
+	hash_add(amdgpu_dev_mdev.offset_htable, &key->hnode, args->out.handle);
+	printk("done AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE \n");
 	return 0;
 
 }
@@ -356,6 +422,46 @@ static int amdgpu_mdev_info_ioctl(struct drm_device *dev, void *data, struct drm
 		printk("failed to copy\n");
 		return -EFAULT;
 	}
+	printk("done AMDGPU_GUEST_CMD_IOCTL_INFO \n");
+	return 0;
+}
+
+static int amdgpu_mdev_cs_wait_fences_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
+{
+	int ret = 0;
+	union drm_amdgpu_wait_fences *wait = data;
+	struct guest_ioctl cmd;
+	struct drm_amdgpu_fence *fences_user;
+	uint32_t fence_count = wait->in.fence_count;
+
+
+	amdgpu_mdev_prepare_cmd(&cmd, AMDGPU_GUEST_CMD_IOCTL_WAIT_FENCES);
+	printk("doing AMDGPU_GUEST_CMD_IOCTL_WAIT_FENCES \n");
+	printk("waiting ofr %u fences \n", fence_count);
+	fences_user = u64_to_user_ptr(wait->in.fences);
+
+	kfifo_in(&amdgpu_dev_mdev.ioctl_reqs, &cmd, sizeof(struct guest_ioctl));
+	memcpy(amdgpu_dev_mdev.bar0_base, &cmd, sizeof(struct guest_ioctl));
+	memcpy(amdgpu_dev_mdev.bar0_base + sizeof(struct guest_ioctl),
+	       data, sizeof(union drm_amdgpu_wait_fences));
+	if (copy_from_user(amdgpu_dev_mdev.bar0_base
+			   + sizeof(struct guest_ioctl)
+			   + sizeof(union drm_amdgpu_wait_fences),
+			   fences_user,
+			   sizeof(struct drm_amdgpu_fence) * fence_count)) {
+		printk("amdgpu_mdev_cs_wait_fences_ioctl faulted\n");
+		return -EFAULT;
+	}
+
+	amdgpu_mdev_ring_doorbell();
+	ret = wait_event_timeout(amdgpu_dev_mdev.ioctl_wait,
+				 &cmd.ioctl_completed,
+				 IOCTL_TIMEOUT);
+	if (!ret)
+		printk("timed out \n");
+	ret = sizeof(cmd);
+	memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_wait_fences ));
+	printk("done AMDGPU_GUEST_CMD_IOCTL_WAIT_FENCES \n");
 	return 0;
 }
 
@@ -376,6 +482,7 @@ const struct drm_ioctl_desc amdgpu_mdev_ioctls_kms[] = {
 	DRM_IOCTL_DEF_DRV(AMDGPU_INFO, amdgpu_mdev_info_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_GEM_METADATA, amdgpu_mdev_metadata_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_GEM_VA, amdgpu_mdev_gem_va_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(AMDGPU_WAIT_FENCES, amdgpu_mdev_cs_wait_fences_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 };
 
 static struct drm_driver mdev_kms_driver = {
@@ -486,6 +593,7 @@ int amdgpu_mdev_pci_probe(struct pci_dev *pdev,
 	if (kfifo_alloc(&amdgpu_dev_mdev.ioctl_reqs,
 			1024 * sizeof(struct guest_ioctl), GFP_KERNEL))
 		goto err_pci;
+	hash_init(amdgpu_dev_mdev.offset_htable);
 	pci_set_drvdata(pdev, ddev);
 
 retry_init:

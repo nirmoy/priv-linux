@@ -388,10 +388,16 @@ int amdgpu_gem_create_ioctl(struct drm_device *dev, void *data,
 			    struct drm_file *filp);
 int _amdgpu_info_ioctl(struct drm_device *dev, struct drm_amdgpu_info *info,
 		       struct drm_file *filp, void* out);
-int amdgpu_mdev_bo_create_list_entry_array(struct drm_amdgpu_bo_list_in *in,
-				      struct drm_amdgpu_bo_list_entry **info_param)
+int amdgpu_mdev_bo_create_list_entry_array(void *data,
+					   struct drm_amdgpu_bo_list_entry **info_param)
 {
-	const void  *uptr = in->bo_info_ptr;
+	union drm_amdgpu_bo_list *args = data;
+	struct drm_amdgpu_bo_list_in *in = &args->in;
+	const void  *uptr = data
+		+ sizeof(struct guest_ioctl)
+		+ sizeof(union drm_amdgpu_bo_list);
+
+
 	const uint32_t info_size = sizeof(struct drm_amdgpu_bo_list_entry);
 	struct drm_amdgpu_bo_list_entry *info;
 	int r;
@@ -402,11 +408,12 @@ int amdgpu_mdev_bo_create_list_entry_array(struct drm_amdgpu_bo_list_in *in,
 
 	/* copy the handle array from userspace to a kernel buffer */
 	r = -EFAULT;
+	printk("amdgpu_mdev_bo_list_ioctl trying to copy %u bo\n", in->bo_number);
 	if (likely(info_size == in->bo_info_size)) {
 		unsigned long bytes = in->bo_number *
 			in->bo_info_size;
 
-		if (copy_from_user(info, uptr, bytes))
+		if (memcpy(info, uptr, bytes))
 			goto error_free;
 
 	} else {
@@ -415,7 +422,7 @@ int amdgpu_mdev_bo_create_list_entry_array(struct drm_amdgpu_bo_list_in *in,
 
 		memset(info, 0, in->bo_number * info_size);
 		for (i = 0; i < in->bo_number; ++i) {
-			if (copy_from_user(&info[i], uptr, bytes))
+			if (memcpy(&info[i], uptr, bytes))
 				goto error_free;
 
 			uptr += in->bo_info_size;
@@ -430,10 +437,55 @@ error_free:
 	return r;
 }
 
+int amdgpu_cs_wait_any_fence(struct amdgpu_device *adev,
+				    struct drm_file *filp,
+				    union drm_amdgpu_wait_fences *wait,
+				    struct drm_amdgpu_fence *fences);
+int amdgpu_cs_wait_all_fences(struct amdgpu_device *adev,
+				     struct drm_file *filp,
+				     union drm_amdgpu_wait_fences *wait,
+				     struct drm_amdgpu_fence *fences);
+
+/**
+ * amdgpu_cs_wait_fences_ioctl - wait for multiple command submissions to finish
+ *
+ * @dev: drm device
+ * @data: data from userspace
+ * @filp: file private
+ */
+int amdgpu_mdev_cs_wait_fences_ioctl(struct drm_device *dev, void *data,
+				struct drm_file *filp)
+{
+	struct amdgpu_device *adev = drm_to_adev(dev);
+	union drm_amdgpu_wait_fences *wait = data;
+	uint32_t fence_count = wait->in.fence_count;
+	struct drm_amdgpu_fence *fences_user;
+	struct drm_amdgpu_fence *fences;
+	int r;
+
+	/* Get the fences from userspace */
+	printk("waiting ofr %u fences \n", fence_count);
+	fences = kmalloc_array(fence_count, sizeof(struct drm_amdgpu_fence),
+			GFP_KERNEL);
+	if (fences == NULL)
+		return -ENOMEM;
+
+	fences = data + sizeof(union drm_amdgpu_wait_fences);
+
+	if (wait->in.wait_all)
+		r = amdgpu_cs_wait_all_fences(adev, filp, wait, fences);
+	else
+		r = amdgpu_cs_wait_any_fence(adev, filp, wait, fences);
+
+err_free_fences:
+	kfree(fences);
+
+	return r;
+}
 
 int handle_guest_cmd(struct mdev_state *mdev_state)
 {
-	int r;
+	int r = 0;
 	get_page(mdev_state->bar2_page);
 	char *map = kmap(mdev_state->bar2_page);
 	struct guest_ioctl *cmd = (struct guest_ioctl *)map;
@@ -478,16 +530,59 @@ int handle_guest_cmd(struct mdev_state *mdev_state)
 	case AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE: {
 		union drm_amdgpu_gem_create *args = data;
 		struct offset_key *key = kzalloc(sizeof(struct offset_key), GFP_KERNEL);
+		struct drm_gem_object *gobj;
+		struct amdgpu_bo *robj;
 
-		//r = amdgpu_gem_create_ioctl(ddev, data, filp);
 
-		printk("amdgpu_gem_create_ioctl ret = %d\n", r);
+		r = amdgpu_gem_create_ioctl(ddev, data, filp);
+		if (r) {
+			printk("amdgpu_gem_create_ioctl failed\n");
+			goto error;
+		}
+
+		printk("amdgpu_gem_create_ioctl ret = %d\n handle %u", r, args->out.handle);
 		key->offset = cmd->offset;
 		key->size = cmd->size;
 		key->filp = filp;
 		key->bo = NULL;
-		r = amdgpu_bo_create_kernel(mdev_state->adev, key->size, PAGE_SIZE,
-					    AMDGPU_GEM_DOMAIN_VRAM,
+		gobj = drm_gem_object_lookup(filp, args->out.handle);
+		if (gobj == NULL) {
+			printk("drm_gem_object_lookup failed\n");
+			goto error;
+		}
+		robj = gem_to_amdgpu_bo(gobj);
+
+		r = amdgpu_bo_reserve(robj, false);
+		if (r) {
+			printk(" (%d) failed to reserve kernel bo\n", r);
+			goto error;
+		}
+
+		r = amdgpu_bo_pin(robj, robj->preferred_domains);
+		if (r) {
+			printk("(%d) kernel bo pin failed\n", r);
+			goto error;
+		}
+
+		r = amdgpu_ttm_alloc_gart(&robj->tbo);
+		if (r) {
+			printk("%p bind failed\n", robj);
+			goto error;
+		}
+
+		key->gpu_addr = amdgpu_bo_gpu_offset(robj);
+
+		r = amdgpu_bo_kmap(robj, &key->cpu_addr);
+		if (r) {
+			printk("(%d) kernel bo map failed\n", r);
+			goto error;
+		}
+
+		key->gobj = gobj;
+		key->bo = robj;
+		/*
+		   r = amdgpu_bo_create_kernel(mdev_state->adev, key->size, PAGE_SIZE,
+		   AMDGPU_GEM_DOMAIN_VRAM,
 					    &key->bo,
 					    &key->gpu_addr,
 					    &key->cpu_addr);
@@ -502,13 +597,14 @@ int handle_guest_cmd(struct mdev_state *mdev_state)
 		}
 		key->gobj = &key->bo->tbo.base;
 		printk(" gem_object %p", key->bo->tbo.base);
-
+		*/
 		hash_add(mdev_state->offset_htable, &key->hnode, key->offset);
-
+error:
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_VM: {
+		printk("amdgpu_vm_ioctl ret = %d\n", r);
 		r = amdgpu_vm_ioctl(ddev, data, filp);
 		printk("amdgpu_vm_ioctl ret = %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
@@ -518,7 +614,7 @@ int handle_guest_cmd(struct mdev_state *mdev_state)
 		struct drm_amdgpu_bo_list_entry *info = NULL;
 		union drm_amdgpu_bo_list *args = data;
 
-		r = amdgpu_mdev_bo_create_list_entry_array(&args->in, &info);
+		r = amdgpu_mdev_bo_create_list_entry_array(data, &info);
 		if (r) {
 			printk("amdgpu_mdev_bo_create_list_entry_array FAILED %d\n", r);
 			amdgpu_mdev_trigger_interrupt(mdev_state);
@@ -532,23 +628,34 @@ int handle_guest_cmd(struct mdev_state *mdev_state)
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_CS: {
+		printk("amdgpu_cs_ioctl %d\n", r);
 		r = amdgpu_cs_ioctl(ddev, data, filp);
 		printk("amdgpu_cs_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_GEM_VA: {
-		r = amdgpu_gem_va_ioctl(ddev, data, filp);
+		printk("amdgpu_gem_va_ioctl %d\n", r);
+		//r = amdgpu_gem_va_ioctl(ddev, data, filp);
 		printk("amdgpu_gem_va_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_GEM_MMAP: {
+		printk("amdgpu_gem_mmap_ioctl  %d\n", r);
 		r = amdgpu_gem_mmap_ioctl(ddev, data, filp);
 		printk("amdgpu_gem_mmap_ioctl  %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
+	case AMDGPU_GUEST_CMD_IOCTL_WAIT_FENCES: {
+		printk("amdgpu_mdev_cs_wait_fences_ioctl  %d\n", r);
+		r = amdgpu_mdev_cs_wait_fences_ioctl(ddev, data, filp);
+		printk("amdgpu_mdev_cs_wait_fences_ioctl  %d\n", r);
+		amdgpu_mdev_trigger_interrupt(mdev_state);
+		break;
+	}
+
 	default:
 		printk("hit Default cmd %d\n", cmd->cmd);
 		break;
@@ -1086,7 +1193,7 @@ static vm_fault_t amdgpu_mdev_bar0_vm_fault(struct vm_fault *vmf)
 	//	((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
 	struct offset_key *key = get_offset_key(mdev_state, page_offset);
 
-	if (key && page_offset) {
+	if (key) {
 		bo = &key->bo->tbo;
 		ttm = bo->ttm;
 
