@@ -393,8 +393,7 @@ int amdgpu_mdev_bo_create_list_entry_array(void *data,
 {
 	union drm_amdgpu_bo_list *args = data;
 	struct drm_amdgpu_bo_list_in *in = &args->in;
-	const void  *uptr = data
-		+ sizeof(struct guest_ioctl)
+	void  *uptr = data
 		+ sizeof(union drm_amdgpu_bo_list);
 
 
@@ -402,19 +401,18 @@ int amdgpu_mdev_bo_create_list_entry_array(void *data,
 	struct drm_amdgpu_bo_list_entry *info;
 	int r;
 
-	info = kvmalloc_array(in->bo_number, info_size, GFP_KERNEL);
+	info = kmalloc_array(in->bo_number, info_size, GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
-	/* copy the handle array from userspace to a kernel buffer */
 	r = -EFAULT;
-	printk("amdgpu_mdev_bo_list_ioctl trying to copy %u bo\n", in->bo_number);
+	printk("amdgpu_mdev_bo_list_ioctl trying to copy %u bo, info_size %u in_info %u\n", in->bo_number, info_size, args->in.bo_info_size);
 	if (likely(info_size == in->bo_info_size)) {
 		unsigned long bytes = in->bo_number *
 			in->bo_info_size;
 
-		if (memcpy(info, uptr, bytes))
-			goto error_free;
+		memcpy(info, uptr, bytes);
+		printk("handle %u\n", info->bo_handle);
 
 	} else {
 		unsigned long bytes = min(in->bo_info_size, info_size);
@@ -422,9 +420,8 @@ int amdgpu_mdev_bo_create_list_entry_array(void *data,
 
 		memset(info, 0, in->bo_number * info_size);
 		for (i = 0; i < in->bo_number; ++i) {
-			if (memcpy(&info[i], uptr, bytes))
-				goto error_free;
-
+			memcpy(&info[i], uptr, bytes);
+			printk("handle %u\n", info[i].bo_handle);
 			uptr += in->bo_info_size;
 		}
 	}

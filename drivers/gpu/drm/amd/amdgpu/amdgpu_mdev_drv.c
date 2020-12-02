@@ -186,24 +186,28 @@ static int amdgpu_mdev_bo_list_ioctl(struct drm_device *dev, void *data, struct 
 	       data, sizeof(union drm_amdgpu_bo_list));
 	memcpy(amdgpu_dev_mdev.bar0_base, &cmd, sizeof(struct guest_ioctl));
 	ret = -EFAULT;
+	printk("amdgpu_mdev_bo_list_ioctl trying to copy %u bo, info_size %u in_info %u\n", in->bo_number, info_size, args->in.bo_info_size);
 	if (likely(info_size == args->in.bo_info_size)) {
-		printk("amdgpu_mdev_bo_list_ioctl trying to copy one bo\n");
 		unsigned long bytes = in->bo_number *
 			in->bo_info_size;
 
-		if (copy_from_user(info, uptr, bytes))
+		if (copy_from_user(info, uptr, bytes)) {
+			printk("failed to copy from user\n");
 			return ret;
+		}
+		printk("handle %u\n", info->bo_handle);
 
 	} else {
 		unsigned long bytes = min(in->bo_info_size, info_size);
 		unsigned i;
-		printk("amdgpu_mdev_bo_list_ioctl trying to copy %u bo\n", in->bo_number);
 
 		memset(info, 0, in->bo_number * info_size);
 		for (i = 0; i < in->bo_number; ++i) {
-			if (copy_from_user(&info[i], uptr, bytes))
+			if (copy_from_user(&info[i], uptr, bytes)) {
+				printk("failed to copy from user\n");
 				return ret;
-
+			}
+			printk("handle %u\n", info[i].bo_handle);
 			uptr += in->bo_info_size;
 		}
 	}
