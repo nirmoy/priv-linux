@@ -41,7 +41,7 @@
 #define VFIO_PCI_INDEX_TO_OFFSET(index) ((u64)(index) << VFIO_PCI_OFFSET_SHIFT)
 #define VFIO_PCI_OFFSET_MASK    (((u64)(1) << VFIO_PCI_OFFSET_SHIFT) - 1)
 
-#define AMDGPU_MDEV_BAR2_SIZE PAGE_SIZE
+#define AMDGPU_MDEV_BAR2_SIZE  1*1024*1024
 #define AMDGPU_MDEV_MMIO_SIZE  PAGE_SIZE
 #define AMDGPU_MDEV_APERTURE_SIZE  128*1024*1024
 
@@ -114,7 +114,7 @@ struct mdev_state {
 	struct notifier_block	iommu_notifier;
 	struct idr		fpriv_handles;
 	struct page		**pages;
-	struct page		*bar2_page;
+	void			*bar2_mem;
 	struct kvm		*kvm;
 	struct amdgpu_vram	stolen_vram;
 	int			irq_fd;
@@ -254,8 +254,8 @@ static int amdgpu_mdev_create(struct kobject *kobj, struct mdev_device *mdev)
 				    GFP_KERNEL);
 	if (!mdev_state->pages)
 		return -1;
-	mdev_state->bar2_page = alloc_pages(GFP_HIGHUSER | __GFP_ZERO, 0);
-	if (!mdev_state->bar2_page)
+	mdev_state->bar2_mem = vmalloc_user(AMDGPU_MDEV_BAR2_SIZE);
+	if (!mdev_state->bar2_mem)
 		return -1;//TODO cleanup
 
 	mdev_state->stolen_vram.bo = NULL;
@@ -484,8 +484,7 @@ int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 int handle_guest_cmd(struct mdev_state *mdev_state)
 {
 	int r = 0;
-	get_page(mdev_state->bar2_page);
-	char *map = kmap(mdev_state->bar2_page);
+	char *map = mdev_state->bar2_mem;
 	struct guest_ioctl *cmd = (struct guest_ioctl *)map;
 	struct amdgpu_mdev_guest_process *gproc;
 	struct drm_device *ddev = &mdev_state->adev->ddev;
@@ -662,8 +661,6 @@ error:
 		break;
 	}
 
-	kunmap(mdev_state->bar2_page);
-	put_page(mdev_state->bar2_page);
 	return 0;
 }
 
@@ -710,18 +707,12 @@ ssize_t amdgpu_mdev_access(struct mdev_device *mdev, char *buf, size_t count,
 	}
 	case VFIO_PCI_BAR2_REGION_INDEX: {
 		printk("accessing bar2\n");
-		pg = mdev_state->bar2_page;
-		get_page(pg);
-		poff = pos & ~PAGE_MASK;
-		map = kmap(mdev_state->bar2_page);
 		/*
 		if (is_write)
 			memcpy(map + poff, buf, count);
 		else
 			memcpy(buf, map + poff, count);
 		*/
-		kunmap(pg);
-		put_page(pg);
 		break;
 	}
 	case VFIO_PCI_BAR1_REGION_INDEX: {
@@ -1230,12 +1221,11 @@ static vm_fault_t amdgpu_mdev_bar0_vm_fault(struct vm_fault *vmf)
 static const struct vm_operations_struct amdgpu_mdev_bar0_vm_ops = {
 	.fault = amdgpu_mdev_bar0_vm_fault,
 };
-
+/*
 static vm_fault_t amdgpu_mdev_bar2_vm_fault(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct mdev_state *mdev_state = vma->vm_private_data;
-	printk("amdgpu_mdev_bar2_vm_fault %p\n", &mdev_state->stolen_vram.bo->tbo);
 	pgoff_t page_offset = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
 	if (page_offset >= mdev_state->pagecount)
@@ -1255,7 +1245,7 @@ static vm_fault_t amdgpu_mdev_bar2_vm_fault(struct vm_fault *vmf)
 static const struct vm_operations_struct amdgpu_mdev_bar2_vm_ops = {
 	.fault = amdgpu_mdev_bar2_vm_fault,
 };
-
+*/
 static int amdgpu_mdev_mmap(struct mdev_device *mdev, struct vm_area_struct *vma)
 {
 	unsigned int index;
@@ -1292,7 +1282,12 @@ static int amdgpu_mdev_mmap(struct mdev_device *mdev, struct vm_area_struct *vma
 		break;
 	case VFIO_PCI_BAR2_REGION_INDEX:
 		printk("mma0 VFIO_PCI_BAR2_REGION_INDEX\n");
-		vma->vm_ops = &amdgpu_mdev_bar2_vm_ops;
+		vma->vm_private_data = mdev_state;
+		//vma->vm_ops = &amdgpu_mdev_bar2_vm_ops;
+		return remap_vmalloc_range_partial(vma, vma->vm_start,
+					   mdev_state->bar2_mem, 0,
+					   vma->vm_end - vma->vm_start);
+
 		break;
 	default:
 		return -EINVAL;
