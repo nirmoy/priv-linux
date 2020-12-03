@@ -26,6 +26,7 @@
 #define IOCTL_TIMEOUT		msecs_to_jiffies(200)
 struct amdgpu_mdev {
 	void  *bar0_base;
+	u32 bar2_size;
 	u32    *mmio;
 	wait_queue_head_t ioctl_wait;
 	struct kfifo ioctl_reqs;
@@ -226,18 +227,188 @@ static int amdgpu_mdev_bo_list_ioctl(struct drm_device *dev, void *data, struct 
 
 }
 
-static int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
+static int amdgpu_mdev_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs *cs)
 {
-	int ret = 0;
+	struct amdgpu_fpriv *fpriv = p->filp->driver_priv;
+	struct amdgpu_vm *vm = &fpriv->vm;
+	uint64_t *chunk_array_user;
+	uint64_t *chunk_array;
+	unsigned size, num_ibs = 0;
+	uint32_t uf_offset = 0;
+	int i;
+	int ret;
+
+	if (cs->in.num_chunks == 0)
+		return 0;
+
+	chunk_array = kmalloc_array(cs->in.num_chunks, sizeof(uint64_t), GFP_KERNEL);
+	if (!chunk_array)
+		return -ENOMEM;
+
+	/* get chunks */
+	chunk_array_user = u64_to_user_ptr(cs->in.chunks);
+	if (copy_from_user(chunk_array, chunk_array_user,
+			   sizeof(uint64_t)*cs->in.num_chunks)) {
+		ret = -EFAULT;
+		goto free_chunk;
+	}
+
+	p->nchunks = cs->in.num_chunks;
+	printk("p->nchunks %u\n", p->nchunks);
+	p->chunks = kmalloc_array(p->nchunks, sizeof(struct amdgpu_cs_chunk),
+			    GFP_KERNEL);
+	if (!p->chunks) {
+		ret = -ENOMEM;
+		goto free_chunk;
+	}
+
+	for (i = 0; i < p->nchunks; i++) {
+		struct drm_amdgpu_cs_chunk __user **chunk_ptr = NULL;
+		struct drm_amdgpu_cs_chunk user_chunk;
+		uint32_t __user *cdata;
+
+		chunk_ptr = u64_to_user_ptr(chunk_array[i]);
+		if (copy_from_user(&user_chunk, chunk_ptr,
+				       sizeof(struct drm_amdgpu_cs_chunk))) {
+			ret = -EFAULT;
+			i--;
+			goto free_partial_kdata;
+		}
+		p->chunks[i].chunk_id = user_chunk.chunk_id;
+		p->chunks[i].length_dw = user_chunk.length_dw;
+
+		size = p->chunks[i].length_dw;
+		printk("length_dw %u\n", p->chunks[i].length_dw);
+		cdata = u64_to_user_ptr(user_chunk.chunk_data);
+
+		p->chunks[i].kdata = kvmalloc_array(size, sizeof(uint32_t), GFP_KERNEL);
+		if (p->chunks[i].kdata == NULL) {
+			ret = -ENOMEM;
+			i--;
+			goto free_partial_kdata;
+		}
+		size *= sizeof(uint32_t);
+		if (copy_from_user(p->chunks[i].kdata, cdata, size)) {
+			ret = -EFAULT;
+			goto free_partial_kdata;
+		}
+
+		printk("kdata after copy %x %d\n", p->chunks[i].kdata, i);
+		switch (p->chunks[i].chunk_id) {
+		case AMDGPU_CHUNK_ID_IB:
+			++num_ibs;
+			break;
+
+		case AMDGPU_CHUNK_ID_FENCE:
+			printk("Err amdgpu_mdev_cs_parser_init AMDGPU_CHUNK_ID_FENCE \n");
+			/*
+			size = sizeof(struct drm_amdgpu_cs_chunk_fence);
+			if (p->chunks[i].length_dw * sizeof(uint32_t) < size) {
+				ret = -EINVAL;
+				goto free_partial_kdata;
+			}
+
+			ret = amdgpu_cs_user_fence_chunk(p, p->chunks[i].kdata,
+							 &uf_offset);
+			if (ret)
+				goto free_partial_kdata;
+			*/
+			break;
+
+		case AMDGPU_CHUNK_ID_BO_HANDLES:
+			printk("Err amdgpu_mdev_cs_parser_init AMDGPU_CHUNK_ID_BO_HANDLES \n");
+			/*
+			size = sizeof(struct drm_amdgpu_bo_list_in);
+			if (p->chunks[i].length_dw * sizeof(uint32_t) < size) {
+				ret = -EINVAL;
+				goto free_partial_kdata;
+			}
+
+			ret = amdgpu_cs_bo_handles_chunk(p, p->chunks[i].kdata);
+			if (ret)
+				goto free_partial_kdata;
+			*/
+			break;
+
+		case AMDGPU_CHUNK_ID_DEPENDENCIES:
+		case AMDGPU_CHUNK_ID_SYNCOBJ_IN:
+		case AMDGPU_CHUNK_ID_SYNCOBJ_OUT:
+		case AMDGPU_CHUNK_ID_SCHEDULED_DEPENDENCIES:
+		case AMDGPU_CHUNK_ID_SYNCOBJ_TIMELINE_WAIT:
+		case AMDGPU_CHUNK_ID_SYNCOBJ_TIMELINE_SIGNAL:
+			break;
+
+		default:
+			ret = -EINVAL;
+			goto free_partial_kdata;
+		}
+	}
+
+	kfree(chunk_array);
+
+	return 0;
+
+free_all_kdata:
+	i = p->nchunks - 1;
+free_partial_kdata:
+	for (; i >= 0; i--)
+		kvfree(p->chunks[i].kdata);
+	kfree(p->chunks);
+	p->chunks = NULL;
+	p->nchunks = 0;
+free_chunk:
+	kfree(chunk_array);
+
+	return ret;
+}
+
+
+int amdgpu_mdev_vm_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
+{
+	int ret = 0, i, size;
 	struct guest_ioctl cmd;
+	struct amdgpu_cs_parser *parser;
+	struct drm_amdgpu_cs_chunk *chunk;
+	struct drm_amdgpu_cs_chunk_ib *chunk_ib;
+	void *cdata;
+	u64 test_data = 0;
 
 	amdgpu_mdev_prepare_cmd(&cmd, AMDGPU_GUEST_CMD_IOCTL_CS);
 	printk("calling AMDGPU_GUEST_CMD_IOCTL_CS\n");
+
+	parser = amdgpu_dev_mdev.bar0_base
+	       + sizeof(struct guest_ioctl)
+	       + sizeof(union drm_amdgpu_cs);
+	ret = amdgpu_mdev_cs_parser_init(parser, data);
+	if (ret)
+		printk("amdgpu_mdev_cs_parser_init failed %d\n", ret);
+	printk("number of chunks %u ret %d %p\n", parser->nchunks, ret, parser->chunks);
+
+	cdata = parser + sizeof(struct amdgpu_cs_parser) +
+		parser->nchunks * sizeof(struct amdgpu_cs_chunk);
+	chunk = (void *) parser + sizeof(struct amdgpu_cs_parser);
+	memcpy(chunk, parser->chunks, parser->nchunks *  sizeof(struct amdgpu_cs_parser));
+	for (i = 0; i < parser->nchunks; i++) {
+		size = parser->chunks[i].length_dw;
+		size *= sizeof(uint32_t);
+		memcpy(cdata, parser->chunks[i].kdata, size);
+		printk("cdata %x %d\n", *(int *)cdata, i);
+		printk("kdata after copy %x %d\n", parser->chunks[i].kdata, i);
+		printk("chunk id %u %d\n", parser->chunks[i].chunk_id, i);
+		printk("%llu %llu", (u64)amdgpu_dev_mdev.bar0_base, (u64)cdata);
+		chunk_ib = parser->chunks[i].kdata;
+		printk("kdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
+		chunk_ib = cdata;
+		printk("cdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
+		cdata = cdata + size;
+
+	}
 
 	kfifo_in(&amdgpu_dev_mdev.ioctl_reqs, &cmd, sizeof(struct guest_ioctl));
 	memcpy(amdgpu_dev_mdev.bar0_base + sizeof(struct guest_ioctl),
 	       data, sizeof(union drm_amdgpu_cs));
 	memcpy(amdgpu_dev_mdev.bar0_base, &cmd, sizeof(struct guest_ioctl));
+	printk("nirmoy %llu %llu", cdata - amdgpu_dev_mdev.bar0_base, amdgpu_dev_mdev.bar2_size);
 	amdgpu_mdev_ring_doorbell();
 	ret = wait_event_timeout(amdgpu_dev_mdev.ioctl_wait,
 				 &cmd.ioctl_completed,
@@ -480,7 +651,7 @@ const struct drm_ioctl_desc amdgpu_mdev_ioctls_kms[] = {
 	DRM_IOCTL_DEF_DRV(AMDGPU_GEM_MMAP, amdgpu_mdev_gem_mmap_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_CTX, amdgpu_mdev_ctx_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_BO_LIST, amdgpu_mdev_bo_list_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
-	DRM_IOCTL_DEF_DRV(AMDGPU_CS, amdgpu_mdev_cs_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(AMDGPU_CS, amdgpu_mdev_vm_cs_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_VM, amdgpu_mdev_vm_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_SCHED, amdgpu_mdev_sched_ioctl, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(AMDGPU_INFO, amdgpu_mdev_info_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
@@ -565,6 +736,7 @@ int amdgpu_mdev_pci_probe(struct pci_dev *pdev,
 	ioaddr = pci_resource_start(pdev, 2);
 	iosize = pci_resource_len(pdev, 2);
 	amdgpu_dev_mdev.bar0_base = memremap(ioaddr, iosize, MEMREMAP_WB);
+	amdgpu_dev_mdev.bar2_size = iosize;
 	ioaddr = pci_resource_start(pdev, 1);
 	iosize = pci_resource_len(pdev, 1);
 	amdgpu_dev_mdev.mmio = memremap(ioaddr, iosize, MEMREMAP_WB);

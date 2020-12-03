@@ -480,6 +480,7 @@ err_free_fences:
 	return r;
 }
 
+int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp);
 int handle_guest_cmd(struct mdev_state *mdev_state)
 {
 	int r = 0;
@@ -625,9 +626,12 @@ error:
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_CS: {
-		printk("amdgpu_cs_ioctl %d\n", r);
-		r = amdgpu_cs_ioctl(ddev, data, filp);
-		printk("amdgpu_cs_ioctl %d\n", r);
+		struct amdgpu_cs_parser *parser;
+		parser = data + sizeof(union drm_amdgpu_cs);
+
+		printk("amdgpu_mdev_cs_ioctl %d\n", r);
+		r = amdgpu_mdev_cs_ioctl(ddev, data, filp);
+		printk("amdgpu_mdev_cs_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}

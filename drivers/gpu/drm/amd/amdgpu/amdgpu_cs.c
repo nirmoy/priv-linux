@@ -104,6 +104,155 @@ error_free:
 	return r;
 }
 
+int amdgpu_mdev_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs *cs)
+{
+	struct amdgpu_cs_parser *parser = (void *)cs + sizeof(union drm_amdgpu_cs);
+	struct drm_amdgpu_cs_chunk *user_chunk = (void *) parser + sizeof(struct amdgpu_cs_parser);
+	struct amdgpu_fpriv *fpriv = p->filp->driver_priv;
+	struct drm_amdgpu_cs_chunk_ib *chunk_ib;
+	struct amdgpu_vm *vm = &fpriv->vm;
+	unsigned size, num_ibs = 0;
+	uint32_t uf_offset = 0;
+	int i;
+	int ret;
+	int cdata_ptr;
+
+	printk("amdgpu_mdev_cs_parser_init\n");
+	if (cs->in.num_chunks == 0)
+		return 0;
+
+	p->ctx = amdgpu_ctx_get(fpriv, cs->in.ctx_id);
+	if (!p->ctx) {
+		ret = -EINVAL;
+		goto free_chunk;
+	}
+
+	printk("amdgpu_mdev_cs_parser_init cs %u vs  parser %u\n", cs->in.num_chunks, parser->nchunks);
+	mutex_lock(&p->ctx->lock);
+
+	/* skip guilty context job */
+	if (atomic_read(&p->ctx->guilty) == 1) {
+		ret = -ECANCELED;
+		goto free_chunk;
+	}
+
+	p->nchunks = cs->in.num_chunks;
+	p->chunks = kmalloc_array(p->nchunks, sizeof(struct amdgpu_cs_chunk),
+			    GFP_KERNEL);
+	if (!p->chunks) {
+		ret = -ENOMEM;
+		goto free_chunk;
+	}
+
+	printk("amdgpu_mdev_cs_parser_init n chunks %u\n", p->nchunks);
+	cdata_ptr = 0;
+	memcpy(p->chunks, (void *)user_chunk, (p->nchunks * sizeof(struct drm_amdgpu_cs_chunk)));
+
+	void *cdata = (void *)user_chunk +
+			(p->nchunks * sizeof(struct drm_amdgpu_cs_chunk));
+
+	for (i = 0; i < p->nchunks; i++) {
+
+		printk("cdata %x %d\n", *(int *)cdata, i);
+		printk("p->chunks[%d].length_dw %u\n", i, p->chunks[i].length_dw);
+		printk("chunk_id  %u p->chunks[i].length_dw %u\n", user_chunk->chunk_id, p->chunks[i].length_dw);
+		size = p->chunks[i].length_dw;
+		p->chunks[i].kdata = kvmalloc_array(size, sizeof(uint32_t), GFP_KERNEL);
+		if (p->chunks[i].kdata == NULL) {
+			ret = -ENOMEM;
+			i--;
+			goto free_partial_kdata;
+		}
+		size *= sizeof(uint32_t);
+		//TODO multiple cdata
+		memcpy(p->chunks[i].kdata, cdata+cdata_ptr, size);
+		chunk_ib = p->chunks[i].kdata;
+		printk("kdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
+		chunk_ib = cdata;
+		printk("cdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
+		cdata_ptr += size;
+
+
+		switch (p->chunks[i].chunk_id) {
+		case AMDGPU_CHUNK_ID_IB:
+			++num_ibs;
+			break;
+
+		case AMDGPU_CHUNK_ID_FENCE:
+			size = sizeof(struct drm_amdgpu_cs_chunk_fence);
+			if (p->chunks[i].length_dw * sizeof(uint32_t) < size) {
+				printk("here1\n");
+				ret = -EINVAL;
+				goto free_partial_kdata;
+			}
+
+			ret = amdgpu_cs_user_fence_chunk(p, p->chunks[i].kdata,
+							 &uf_offset);
+			if (ret)
+				goto free_partial_kdata;
+
+			break;
+
+		case AMDGPU_CHUNK_ID_BO_HANDLES:
+			size = sizeof(struct drm_amdgpu_bo_list_in);
+			if (p->chunks[i].length_dw * sizeof(uint32_t) < size) {
+				printk("here2\n");
+				ret = -EINVAL;
+				goto free_partial_kdata;
+			}
+
+			ret = amdgpu_cs_bo_handles_chunk(p, p->chunks[i].kdata);
+			if (ret)
+				goto free_partial_kdata;
+
+			break;
+
+		case AMDGPU_CHUNK_ID_DEPENDENCIES:
+		case AMDGPU_CHUNK_ID_SYNCOBJ_IN:
+		case AMDGPU_CHUNK_ID_SYNCOBJ_OUT:
+		case AMDGPU_CHUNK_ID_SCHEDULED_DEPENDENCIES:
+		case AMDGPU_CHUNK_ID_SYNCOBJ_TIMELINE_WAIT:
+		case AMDGPU_CHUNK_ID_SYNCOBJ_TIMELINE_SIGNAL:
+			break;
+
+		default:
+			printk("here3\n");
+			ret = -EINVAL;
+			goto free_partial_kdata;
+		}
+	}
+
+	ret = amdgpu_job_alloc(p->adev, num_ibs, &p->job, vm);
+	if (ret)
+		goto free_all_kdata;
+
+	if (p->ctx->vram_lost_counter != p->job->vram_lost_counter) {
+		ret = -ECANCELED;
+		goto free_all_kdata;
+	}
+
+	if (p->uf_entry.tv.bo)
+		p->job->uf_addr = uf_offset;
+
+	/* Use this opportunity to fill in task info for the vm */
+	amdgpu_vm_set_task_info(vm);
+
+	return 0;
+
+free_all_kdata:
+	i = p->nchunks - 1;
+free_partial_kdata:
+	for (; i >= 0; i--)
+		kvfree(p->chunks[i].kdata);
+	kfree(p->chunks);
+	p->chunks = NULL;
+	p->nchunks = 0;
+free_chunk:
+
+	return ret;
+}
+
+
 static int amdgpu_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs *cs)
 {
 	struct amdgpu_fpriv *fpriv = p->filp->driver_priv;
@@ -1285,7 +1434,7 @@ static void trace_amdgpu_cs_ibs(struct amdgpu_cs_parser *parser)
 		trace_amdgpu_cs(parser, i);
 }
 
-int amdgpu_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
+int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 {
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	union drm_amdgpu_cs *cs = data;
@@ -1302,7 +1451,7 @@ int amdgpu_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	parser.adev = adev;
 	parser.filp = filp;
 
-	r = amdgpu_cs_parser_init(&parser, data);
+	r = amdgpu_mdev_cs_parser_init(&parser, cs);
 	if (r) {
 		if (printk_ratelimit())
 			DRM_ERROR("Failed to initialize parser %d!\n", r);
@@ -1344,6 +1493,64 @@ out:
 	return r;
 }
 
+int amdgpu_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
+{
+	struct amdgpu_device *adev = drm_to_adev(dev);
+	union drm_amdgpu_cs *cs = data;
+	struct amdgpu_cs_parser parser = {};
+	bool reserved_buffers = false;
+	int r;
+
+	if (amdgpu_ras_intr_triggered())
+		return -EHWPOISON;
+
+	if (!adev->accel_working)
+		return -EBUSY;
+
+	parser.adev = adev;
+	parser.filp = filp;
+
+	r = amdgpu_cs_parser_init(&parser, cs);
+	if (r) {
+		if (printk_ratelimit())
+			DRM_ERROR("Failed to initialize parser %d!\n", r);
+		goto out;
+	}
+
+	r = amdgpu_cs_ib_fill(adev, &parser);
+	if (r)
+		goto out;
+
+	r = amdgpu_cs_dependencies(adev, &parser);
+	if (r) {
+		DRM_ERROR("Failed in the dependencies handling %d!\n", r);
+		goto out;
+	}
+
+	r = amdgpu_cs_parser_bos(&parser, data);
+	if (r) {
+		if (r == -ENOMEM)
+			DRM_ERROR("Not enough memory for command submission!\n");
+		else if (r != -ERESTARTSYS && r != -EAGAIN)
+			DRM_ERROR("Failed to process the buffer list %d!\n", r);
+		goto out;
+	}
+
+	reserved_buffers = true;
+
+	trace_amdgpu_cs_ibs(&parser);
+
+	r = amdgpu_cs_vm_handling(&parser);
+	if (r)
+		goto out;
+
+	r = amdgpu_cs_submit(&parser, cs);
+
+out:
+	amdgpu_cs_parser_fini(&parser, r, reserved_buffers);
+
+	return r;
+}
 /**
  * amdgpu_cs_wait_ioctl - wait for a command submission to finish
  *
