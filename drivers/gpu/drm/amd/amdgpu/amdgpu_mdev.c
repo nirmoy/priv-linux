@@ -41,7 +41,7 @@
 #define VFIO_PCI_INDEX_TO_OFFSET(index) ((u64)(index) << VFIO_PCI_OFFSET_SHIFT)
 #define VFIO_PCI_OFFSET_MASK    (((u64)(1) << VFIO_PCI_OFFSET_SHIFT) - 1)
 
-#define AMDGPU_MDEV_BAR2_SIZE  1*1024*1024
+#define AMDGPU_MDEV_BAR2_SIZE  2*1024*1024
 #define AMDGPU_MDEV_MMIO_SIZE  PAGE_SIZE
 #define AMDGPU_MDEV_APERTURE_SIZE  128*1024*1024
 
@@ -442,6 +442,8 @@ int amdgpu_cs_wait_all_fences(struct amdgpu_device *adev,
 				     struct drm_file *filp,
 				     union drm_amdgpu_wait_fences *wait,
 				     struct drm_amdgpu_fence *fences);
+int amdgpu_cs_wait_ioctl(struct drm_device *dev, void *data,
+			 struct drm_file *filp);
 
 /**
  * amdgpu_cs_wait_fences_ioctl - wait for multiple command submissions to finish
@@ -519,8 +521,11 @@ int handle_guest_cmd(struct mdev_state *mdev_state)
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_CTX: {
+		union drm_amdgpu_ctx *args = data;
+		printk("amdgpu_ctx_ioctl ret = %d\n", r);
 		r = amdgpu_ctx_ioctl(ddev, data, filp);
 		printk("amdgpu_ctx_ioctl ret = %d\n", r);
+		printk("allocated ctx_id %u\n", args->out.alloc.ctx_id);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
@@ -634,6 +639,14 @@ error:
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;
 	}
+	case AMDGPU_GUEST_CMD_IOCTL_WAIT_CS: {
+		printk("amdgpu_cs_wait_ioctl %d\n", r);
+		r = amdgpu_cs_wait_ioctl(ddev, data, filp);
+		printk("amdgpu_cs_wait_ioctl %d\n", r);
+		amdgpu_mdev_trigger_interrupt(mdev_state);
+		break;
+	}
+
 	case AMDGPU_GUEST_CMD_IOCTL_GEM_VA: {
 		printk("amdgpu_gem_va_ioctl %d\n", r);
 		//r = amdgpu_gem_va_ioctl(ddev, data, filp);

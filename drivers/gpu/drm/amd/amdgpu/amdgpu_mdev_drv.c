@@ -384,13 +384,14 @@ int amdgpu_mdev_vm_cs_ioctl(struct drm_device *dev, void *data, struct drm_file 
 		printk("amdgpu_mdev_cs_parser_init failed %d\n", ret);
 	printk("number of chunks %u ret %d %p\n", parser->nchunks, ret, parser->chunks);
 
-	cdata = parser + sizeof(struct amdgpu_cs_parser) +
+	cdata = (void *)parser + sizeof(struct amdgpu_cs_parser) +
 		parser->nchunks * sizeof(struct amdgpu_cs_chunk);
 	chunk = (void *) parser + sizeof(struct amdgpu_cs_parser);
 	memcpy(chunk, parser->chunks, parser->nchunks *  sizeof(struct amdgpu_cs_parser));
 	for (i = 0; i < parser->nchunks; i++) {
 		size = parser->chunks[i].length_dw;
 		size *= sizeof(uint32_t);
+		printk("p->chunks[%d].length_dw %u id %u\n", i, parser->chunks[i].length_dw, parser->chunks[i].chunk_id);
 		memcpy(cdata, parser->chunks[i].kdata, size);
 		printk("cdata %x %d\n", *(int *)cdata, i);
 		printk("kdata after copy %x %d\n", parser->chunks[i].kdata, i);
@@ -400,7 +401,10 @@ int amdgpu_mdev_vm_cs_ioctl(struct drm_device *dev, void *data, struct drm_file 
 		printk("kdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
 		chunk_ib = cdata;
 		printk("cdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
+		printk("nirmoy cdata - cs %llu\n", cdata - (void *)parser);
+		printk("nirmoy cdata - cs %llu\n", cdata - (void *)parser);
 		cdata = cdata + size;
+		printk("after cdata");
 
 	}
 
@@ -408,8 +412,9 @@ int amdgpu_mdev_vm_cs_ioctl(struct drm_device *dev, void *data, struct drm_file 
 	memcpy(amdgpu_dev_mdev.bar0_base + sizeof(struct guest_ioctl),
 	       data, sizeof(union drm_amdgpu_cs));
 	memcpy(amdgpu_dev_mdev.bar0_base, &cmd, sizeof(struct guest_ioctl));
-	printk("nirmoy %llu %llu", cdata - amdgpu_dev_mdev.bar0_base, amdgpu_dev_mdev.bar2_size);
+	printk("done memcpy\n");
 	amdgpu_mdev_ring_doorbell();
+	printk("waiting \n");
 	ret = wait_event_timeout(amdgpu_dev_mdev.ioctl_wait,
 				 &cmd.ioctl_completed,
 				 IOCTL_TIMEOUT);
@@ -492,6 +497,37 @@ static int amdgpu_mdev_gem_mmap_ioctl(struct drm_device *dev, void *data, struct
 	printk("Mapping %llu\n", args->out.addr_ptr);
 	printk("done AMDGPU_GUEST_CMD_IOCTL_GEM_MMAP \n");
 	//memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_gem_mmap));
+	return 0;
+
+}
+
+static int amdgpu_mdev_wait_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
+{
+	int ret = 0;
+	struct guest_ioctl cmd;
+	union drm_amdgpu_wait_cs *wait = data;
+
+	amdgpu_mdev_prepare_cmd(&cmd, AMDGPU_GUEST_CMD_IOCTL_WAIT_CS);
+	printk("doing AMDGPU_GUEST_CMD_IOCTL_WAIT_CS \n");
+	printk("sending ctx %u ip_type %u ins %u\n",
+	       wait->in.ctx_id,
+	       wait->in.ip_type,
+	       wait->in.ip_instance);
+
+	kfifo_in(&amdgpu_dev_mdev.ioctl_reqs, &cmd, sizeof(struct guest_ioctl));
+	memcpy(amdgpu_dev_mdev.bar0_base + sizeof(struct guest_ioctl),
+	       data, sizeof(union drm_amdgpu_wait_cs));
+	memcpy(amdgpu_dev_mdev.bar0_base, &cmd, sizeof(struct guest_ioctl));
+	amdgpu_mdev_ring_doorbell();
+	ret = wait_event_timeout(amdgpu_dev_mdev.ioctl_wait,
+				 &cmd.ioctl_completed,
+				 IOCTL_TIMEOUT);
+	if (!ret)
+		printk("timed out \n");
+	ret = sizeof(cmd);
+	memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_wait_cs));
+	printk("out status %d\n", wait->out.status);
+	printk("done AMDGPU_GUEST_CMD_IOCTL_WAIT_CS \n");
 	return 0;
 
 }
@@ -652,6 +688,7 @@ const struct drm_ioctl_desc amdgpu_mdev_ioctls_kms[] = {
 	DRM_IOCTL_DEF_DRV(AMDGPU_CTX, amdgpu_mdev_ctx_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_BO_LIST, amdgpu_mdev_bo_list_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_CS, amdgpu_mdev_vm_cs_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(AMDGPU_WAIT_CS, amdgpu_mdev_wait_cs_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_VM, amdgpu_mdev_vm_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(AMDGPU_SCHED, amdgpu_mdev_sched_ioctl, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(AMDGPU_INFO, amdgpu_mdev_info_ioctl, DRM_AUTH|DRM_RENDER_ALLOW),

@@ -148,13 +148,15 @@ int amdgpu_mdev_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs *
 	cdata_ptr = 0;
 	memcpy(p->chunks, (void *)user_chunk, (p->nchunks * sizeof(struct drm_amdgpu_cs_chunk)));
 
-	void *cdata = (void *)user_chunk +
-			(p->nchunks * sizeof(struct drm_amdgpu_cs_chunk));
+	void *cdata = (void *)cs + sizeof(union drm_amdgpu_cs)
+		+sizeof(struct amdgpu_cs_parser)
+		+(p->nchunks * sizeof(struct drm_amdgpu_cs_chunk));
+	printk("nirmoy cdata - cs %llu\n", cdata - (void *)parser);
 
 	for (i = 0; i < p->nchunks; i++) {
 
 		printk("cdata %x %d\n", *(int *)cdata, i);
-		printk("p->chunks[%d].length_dw %u\n", i, p->chunks[i].length_dw);
+		printk("p->chunks[%d].length_dw %u id %u\n", i, p->chunks[i].length_dw, p->chunks[i].chunk_id);
 		printk("chunk_id  %u p->chunks[i].length_dw %u\n", user_chunk->chunk_id, p->chunks[i].length_dw);
 		size = p->chunks[i].length_dw;
 		p->chunks[i].kdata = kvmalloc_array(size, sizeof(uint32_t), GFP_KERNEL);
@@ -168,11 +170,9 @@ int amdgpu_mdev_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdgpu_cs *
 		memcpy(p->chunks[i].kdata, cdata+cdata_ptr, size);
 		chunk_ib = p->chunks[i].kdata;
 		printk("kdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
-		chunk_ib = cdata;
-		printk("cdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
 		cdata_ptr += size;
 
-
+		printk("switch chunk_id %u \n", p->chunks[i].chunk_id);
 		switch (p->chunks[i].chunk_id) {
 		case AMDGPU_CHUNK_ID_IB:
 			++num_ibs;
@@ -729,14 +729,16 @@ static int amdgpu_cs_parser_bos(struct amdgpu_cs_parser *p,
 		e->user_invalidated = userpage_invalidated;
 	}
 
+	/*
 	r = ttm_eu_reserve_buffers(&p->ticket, &p->validated, true,
 				   &duplicates);
 	if (unlikely(r != 0)) {
+		printk("here 4.5\n");
 		if (r != -ERESTARTSYS)
 			DRM_ERROR("ttm_eu_reserve_buffers failed.\n");
 		goto out;
 	}
-
+*/
 	amdgpu_cs_get_threshold_for_moves(p->adev, &p->bytes_moved_threshold,
 					  &p->bytes_moved_vis_threshold);
 	p->bytes_moved = 0;
@@ -1457,7 +1459,7 @@ int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 			DRM_ERROR("Failed to initialize parser %d!\n", r);
 		goto out;
 	}
-
+	printk("amdgpu_mdev_cs_parser_init %d\n", r);
 	r = amdgpu_cs_ib_fill(adev, &parser);
 	if (r)
 		goto out;
@@ -1468,8 +1470,10 @@ int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 		goto out;
 	}
 
+	printk("amdgpu_cs_parser_bos before  %d\n", r);
 	r = amdgpu_cs_parser_bos(&parser, data);
 	if (r) {
+		printk("amdgpu_cs_parser_bos failed  %d\n", r);
 		if (r == -ENOMEM)
 			DRM_ERROR("Not enough memory for command submission!\n");
 		else if (r != -ERESTARTSYS && r != -EAGAIN)
@@ -1479,12 +1483,15 @@ int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 
 	reserved_buffers = true;
 
+	printk("trace_amdgpu_cs_ibs before  %d\n", r);
 	trace_amdgpu_cs_ibs(&parser);
 
+	printk("amdgpu_cs_vm_handling before  %d\n", r);
 	r = amdgpu_cs_vm_handling(&parser);
 	if (r)
 		goto out;
 
+	printk(" before amdgpu_cs_submit\n");
 	r = amdgpu_cs_submit(&parser, cs);
 
 out:
@@ -1571,19 +1578,24 @@ int amdgpu_cs_wait_ioctl(struct drm_device *dev, void *data,
 	long r;
 
 	ctx = amdgpu_ctx_get(filp->driver_priv, wait->in.ctx_id);
-	if (ctx == NULL)
+	if (ctx == NULL) {
+		printk("amdgpu_cs_wait_ioctl error ctx_id %d\n", wait->in.ctx_id);
 		return -EINVAL;
+	}
 
 	r = amdgpu_ctx_get_entity(ctx, wait->in.ip_type, wait->in.ip_instance,
 				  wait->in.ring, &entity);
 	if (r) {
+		printk("amdgpu_cs_wait_ioctl error ip_type %d\n", wait->in.ip_type);
 		amdgpu_ctx_put(ctx);
 		return r;
 	}
 
 	fence = amdgpu_ctx_get_fence(ctx, entity, wait->in.handle);
-	if (IS_ERR(fence))
+	if (IS_ERR(fence)) {
+		printk("amdgpu_cs_wait_ioctl febce error %u\n", wait->in.handle);
 		r = PTR_ERR(fence);
+	}
 	else if (fence) {
 		r = dma_fence_wait_timeout(fence, true, timeout);
 		if (r > 0 && fence->error)
@@ -1593,11 +1605,14 @@ int amdgpu_cs_wait_ioctl(struct drm_device *dev, void *data,
 		r = 1;
 
 	amdgpu_ctx_put(ctx);
-	if (r < 0)
+	if (r < 0) {
+		printk("amdgpu_cs_wait_ioctl put ctx\n");
 		return r;
+	}
 
 	memset(wait, 0, sizeof(*wait));
 	wait->out.status = (r == 0);
+	printk("out status %d\n", wait->out.status);
 
 	return 0;
 }
