@@ -682,11 +682,11 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 
 	printk("here 4\n");
 	amdgpu_vm_get_pd_bo(&fpriv->vm, &list, &vm_pd);
-
+/*
 	r = ttm_eu_reserve_buffers(&ticket, &list, true, &duplicates);
 	if (r)
 		goto error_unref;
-
+*/
 	if (abo) {
 		bo_va = amdgpu_vm_bo_find(&fpriv->vm, abo);
 		if (!bo_va) {

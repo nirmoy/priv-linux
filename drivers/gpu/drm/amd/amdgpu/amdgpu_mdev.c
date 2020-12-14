@@ -632,11 +632,13 @@ error:
 	case AMDGPU_GUEST_CMD_IOCTL_CS: {
 		struct amdgpu_cs_parser *parser;
 		parser = data + sizeof(union drm_amdgpu_cs);
+		union drm_amdgpu_cs *args = data;
 
 		printk("amdgpu_mdev_cs_ioctl %d\n", r);
 		r = amdgpu_mdev_cs_ioctl(ddev, data, filp);
 		printk("amdgpu_mdev_cs_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
+		printk("args->out.handle %lu\n", args->out.handle);
 		break;
 	}
 	case AMDGPU_GUEST_CMD_IOCTL_WAIT_CS: {
@@ -649,7 +651,7 @@ error:
 
 	case AMDGPU_GUEST_CMD_IOCTL_GEM_VA: {
 		printk("amdgpu_gem_va_ioctl %d\n", r);
-		//r = amdgpu_gem_va_ioctl(ddev, data, filp);
+		r = amdgpu_gem_va_ioctl(ddev, data, filp);
 		printk("amdgpu_gem_va_ioctl %d\n", r);
 		amdgpu_mdev_trigger_interrupt(mdev_state);
 		break;

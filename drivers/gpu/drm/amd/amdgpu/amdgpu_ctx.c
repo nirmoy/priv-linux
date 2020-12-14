@@ -472,6 +472,7 @@ void amdgpu_ctx_add_fence(struct amdgpu_ctx *ctx,
 	dma_fence_put(other);
 	if (handle)
 		*handle = seq;
+	printk("amdgpu_ctx_add_fence %llu\n", seq);
 }
 
 struct dma_fence *amdgpu_ctx_get_fence(struct amdgpu_ctx *ctx,

@@ -729,7 +729,6 @@ static int amdgpu_cs_parser_bos(struct amdgpu_cs_parser *p,
 		e->user_invalidated = userpage_invalidated;
 	}
 
-	/*
 	r = ttm_eu_reserve_buffers(&p->ticket, &p->validated, true,
 				   &duplicates);
 	if (unlikely(r != 0)) {
@@ -738,7 +737,7 @@ static int amdgpu_cs_parser_bos(struct amdgpu_cs_parser *p,
 			DRM_ERROR("ttm_eu_reserve_buffers failed.\n");
 		goto out;
 	}
-*/
+
 	amdgpu_cs_get_threshold_for_moves(p->adev, &p->bytes_moved_threshold,
 					  &p->bytes_moved_vis_threshold);
 	p->bytes_moved = 0;
@@ -821,6 +820,157 @@ static int amdgpu_cs_sync_rings(struct amdgpu_cs_parser *p)
 			return r;
 	}
 	return 0;
+}
+
+static int amdgpu_mdev_cs_parser_bos(struct amdgpu_cs_parser *p,
+				union drm_amdgpu_cs *cs)
+{
+	struct amdgpu_fpriv *fpriv = p->filp->driver_priv;
+	struct amdgpu_vm *vm = &fpriv->vm;
+	struct amdgpu_bo_list_entry *e;
+	struct list_head duplicates;
+	struct amdgpu_bo *gds;
+	struct amdgpu_bo *gws;
+	struct amdgpu_bo *oa;
+	int r;
+
+	INIT_LIST_HEAD(&p->validated);
+
+	/* p->bo_list could already be assigned if AMDGPU_CHUNK_ID_BO_HANDLES is present */
+	if (cs->in.bo_list_handle) {
+		if (p->bo_list)
+			return -EINVAL;
+
+		r = amdgpu_bo_list_get(fpriv, cs->in.bo_list_handle,
+				       &p->bo_list);
+		if (r)
+			return r;
+	} else if (!p->bo_list) {
+		/* Create a empty bo_list when no handle is provided */
+		r = amdgpu_bo_list_create(p->adev, p->filp, NULL, 0,
+					  &p->bo_list);
+		if (r)
+			return r;
+	}
+
+	/* One for TTM and one for the CS job */
+	amdgpu_bo_list_for_each_entry(e, p->bo_list)
+		e->tv.num_shared = 2;
+
+	amdgpu_bo_list_get_list(p->bo_list, &p->validated);
+
+	INIT_LIST_HEAD(&duplicates);
+	amdgpu_vm_get_pd_bo(&fpriv->vm, &p->validated, &p->vm_pd);
+
+	if (p->uf_entry.tv.bo && !ttm_to_amdgpu_bo(p->uf_entry.tv.bo)->parent)
+		list_add(&p->uf_entry.tv.head, &p->validated);
+
+	/* Get userptr backing pages. If pages are updated after registered
+	 * in amdgpu_gem_userptr_ioctl(), amdgpu_cs_list_validate() will do
+	 * amdgpu_ttm_backend_bind() to flush and invalidate new pages
+	 */
+	amdgpu_bo_list_for_each_userptr_entry(e, p->bo_list) {
+		struct amdgpu_bo *bo = ttm_to_amdgpu_bo(e->tv.bo);
+		bool userpage_invalidated = false;
+		int i;
+
+		e->user_pages = kvmalloc_array(bo->tbo.ttm->num_pages,
+					sizeof(struct page *),
+					GFP_KERNEL | __GFP_ZERO);
+		if (!e->user_pages) {
+			DRM_ERROR("calloc failure\n");
+			return -ENOMEM;
+		}
+
+		r = amdgpu_ttm_tt_get_user_pages(bo, e->user_pages);
+		if (r) {
+			kvfree(e->user_pages);
+			e->user_pages = NULL;
+			return r;
+		}
+
+		for (i = 0; i < bo->tbo.ttm->num_pages; i++) {
+			if (bo->tbo.ttm->pages[i] != e->user_pages[i]) {
+				userpage_invalidated = true;
+				break;
+			}
+		}
+		e->user_invalidated = userpage_invalidated;
+	}
+
+	/*
+	r = ttm_eu_reserve_buffers(&p->ticket, &p->validated, true,
+				   &duplicates);
+	if (unlikely(r != 0)) {
+		printk("here 4.5\n");
+		if (r != -ERESTARTSYS)
+			DRM_ERROR("ttm_eu_reserve_buffers failed.\n");
+		goto out;
+	}
+*/
+	amdgpu_cs_get_threshold_for_moves(p->adev, &p->bytes_moved_threshold,
+					  &p->bytes_moved_vis_threshold);
+	p->bytes_moved = 0;
+	p->bytes_moved_vis = 0;
+
+	r = amdgpu_vm_validate_pt_bos(p->adev, &fpriv->vm,
+				      amdgpu_cs_validate, p);
+	if (r) {
+		DRM_ERROR("amdgpu_vm_validate_pt_bos() failed.\n");
+		goto error_validate;
+	}
+
+	r = amdgpu_cs_list_validate(p, &duplicates);
+	if (r)
+		goto error_validate;
+
+	r = amdgpu_cs_list_validate(p, &p->validated);
+	if (r)
+		goto error_validate;
+
+	amdgpu_cs_report_moved_bytes(p->adev, p->bytes_moved,
+				     p->bytes_moved_vis);
+
+	gds = p->bo_list->gds_obj;
+	gws = p->bo_list->gws_obj;
+	oa = p->bo_list->oa_obj;
+
+	amdgpu_bo_list_for_each_entry(e, p->bo_list) {
+		struct amdgpu_bo *bo = ttm_to_amdgpu_bo(e->tv.bo);
+
+		/* Make sure we use the exclusive slot for shared BOs */
+		if (bo->prime_shared_count)
+			e->tv.num_shared = 0;
+		e->bo_va = amdgpu_vm_bo_find(vm, bo);
+	}
+
+	if (gds) {
+		p->job->gds_base = amdgpu_bo_gpu_offset(gds) >> PAGE_SHIFT;
+		p->job->gds_size = amdgpu_bo_size(gds) >> PAGE_SHIFT;
+	}
+	if (gws) {
+		p->job->gws_base = amdgpu_bo_gpu_offset(gws) >> PAGE_SHIFT;
+		p->job->gws_size = amdgpu_bo_size(gws) >> PAGE_SHIFT;
+	}
+	if (oa) {
+		p->job->oa_base = amdgpu_bo_gpu_offset(oa) >> PAGE_SHIFT;
+		p->job->oa_size = amdgpu_bo_size(oa) >> PAGE_SHIFT;
+	}
+
+	if (!r && p->uf_entry.tv.bo) {
+		struct amdgpu_bo *uf = ttm_to_amdgpu_bo(p->uf_entry.tv.bo);
+
+		r = amdgpu_ttm_alloc_gart(&uf->tbo);
+		p->job->uf_addr += amdgpu_bo_gpu_offset(uf);
+	}
+
+error_validate:
+	/*
+	if (r)
+		ttm_eu_backoff_reservation(&p->ticket, &p->validated);
+		*/
+out:
+	return r;
 }
 
 /**
@@ -1470,8 +1620,8 @@ int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 		goto out;
 	}
 
-	printk("amdgpu_cs_parser_bos before  %d\n", r);
-	r = amdgpu_cs_parser_bos(&parser, data);
+	printk("amdgpu_mdev_cs_parser_bos before  %d\n", r);
+	r = amdgpu_mdev_cs_parser_bos(&parser, data);
 	if (r) {
 		printk("amdgpu_cs_parser_bos failed  %d\n", r);
 		if (r == -ENOMEM)
@@ -1582,7 +1732,7 @@ int amdgpu_cs_wait_ioctl(struct drm_device *dev, void *data,
 		printk("amdgpu_cs_wait_ioctl error ctx_id %d\n", wait->in.ctx_id);
 		return -EINVAL;
 	}
-
+	printk("got ctx %p\n", ctx);
 	r = amdgpu_ctx_get_entity(ctx, wait->in.ip_type, wait->in.ip_instance,
 				  wait->in.ring, &entity);
 	if (r) {
@@ -1591,12 +1741,14 @@ int amdgpu_cs_wait_ioctl(struct drm_device *dev, void *data,
 		return r;
 	}
 
+	printk("got entity %s\n", entity->rq->sched->name);
 	fence = amdgpu_ctx_get_fence(ctx, entity, wait->in.handle);
 	if (IS_ERR(fence)) {
 		printk("amdgpu_cs_wait_ioctl febce error %u\n", wait->in.handle);
 		r = PTR_ERR(fence);
 	}
 	else if (fence) {
+		printk("got fence sq %llu waiting for %lu\n", fence->seqno, timeout);
 		r = dma_fence_wait_timeout(fence, true, timeout);
 		if (r > 0 && fence->error)
 			r = fence->error;
