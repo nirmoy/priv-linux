@@ -613,7 +613,7 @@ int amdgpu_gem_va_ioctl(struct drm_device *dev, void *data,
 	uint64_t vm_size;
 	int r = 0;
 
-	printk("here 1\n");
+	printk("here 1 handle %u\n", args->handle);
 	if (args->va_address < AMDGPU_VA_RESERVED_SIZE) {
 		dev_dbg(&dev->pdev->dev,
 			"va_address 0x%LX is in reserved area 0x%LX\n",

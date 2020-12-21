@@ -254,7 +254,7 @@ static int amdgpu_mdev_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdg
 	}
 
 	p->nchunks = cs->in.num_chunks;
-	printk("p->nchunks %u\n", p->nchunks);
+	//printk("p->nchunks %u\n", p->nchunks);
 	p->chunks = kmalloc_array(p->nchunks, sizeof(struct amdgpu_cs_chunk),
 			    GFP_KERNEL);
 	if (!p->chunks) {
@@ -293,7 +293,7 @@ static int amdgpu_mdev_cs_parser_init(struct amdgpu_cs_parser *p, union drm_amdg
 			goto free_partial_kdata;
 		}
 
-		printk("kdata after copy %x %d\n", p->chunks[i].kdata, i);
+		//printk("kdata after copy %x %d\n", p->chunks[i].kdata, i);
 		switch (p->chunks[i].chunk_id) {
 		case AMDGPU_CHUNK_ID_IB:
 			++num_ibs;
@@ -393,16 +393,16 @@ int amdgpu_mdev_vm_cs_ioctl(struct drm_device *dev, void *data, struct drm_file 
 		size *= sizeof(uint32_t);
 		printk("p->chunks[%d].length_dw %u id %u\n", i, parser->chunks[i].length_dw, parser->chunks[i].chunk_id);
 		memcpy(cdata, parser->chunks[i].kdata, size);
-		printk("cdata %x %d\n", *(int *)cdata, i);
-		printk("kdata after copy %x %d\n", parser->chunks[i].kdata, i);
-		printk("chunk id %u %d\n", parser->chunks[i].chunk_id, i);
-		printk("%llu %llu", (u64)amdgpu_dev_mdev.bar0_base, (u64)cdata);
+	//	printk("cdata %x %d\n", *(int *)cdata, i);
+	//	printk("kdata after copy %x %d\n", parser->chunks[i].kdata, i);
+	//	printk("chunk id %u %d\n", parser->chunks[i].chunk_id, i);
+	//	printk("%llu %llu", (u64)amdgpu_dev_mdev.bar0_base, (u64)cdata);
 		chunk_ib = parser->chunks[i].kdata;
-		printk("kdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
+		printk("kdata va_start %llu instance %u ring %u", chunk_ib->va_start, chunk_ib->ip_instance, chunk_ib->ring);
 		chunk_ib = cdata;
-		printk("cdata ip_type %u instance %u ring %u", chunk_ib->ip_type, chunk_ib->ip_instance, chunk_ib->ring);
-		printk("nirmoy cdata - cs %llu\n", cdata - (void *)parser);
-		printk("nirmoy cdata - cs %llu\n", cdata - (void *)parser);
+		printk("cdata va_start %llu instance %u ring %u", chunk_ib->va_start, chunk_ib->ip_instance, chunk_ib->ring);
+	//	printk("nirmoy cdata - cs %llu\n", cdata - (void *)parser);
+	//	printk("nirmoy cdata - cs %llu\n", cdata - (void *)parser);
 		cdata = cdata + size;
 		printk("after cdata");
 

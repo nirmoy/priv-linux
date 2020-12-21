@@ -1234,6 +1234,7 @@ static int amdgpu_cs_ib_fill(struct amdgpu_device *adev,
 		ib->gpu_addr = chunk_ib->va_start;
 		ib->length_dw = chunk_ib->ib_bytes / 4;
 		ib->flags = chunk_ib->flags;
+		printk("va_start %llu length %u flags %u\n", ib->gpu_addr, ib->length_dw, ib->flags);
 
 		j++;
 	}
@@ -1591,6 +1592,7 @@ int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	union drm_amdgpu_cs *cs = data;
 	struct amdgpu_cs_parser parser = {};
+	struct amdgpu_ring *ring;
 	bool reserved_buffers = false;
 	int r;
 
@@ -1641,7 +1643,10 @@ int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 	if (r)
 		goto out;
 
-	printk(" before amdgpu_cs_submit\n");
+	printk(" before amdgpu_cs_submit");
+	ring = to_amdgpu_ring(parser.entity->rq->sched);
+	printk(" before amdgpu_cs_submit %s %s\n", ring->name, parser.entity->rq->sched->name);
+//r =amdgpu_job_submit_direct(parser.job, ring, &parser.fence);
 	r = amdgpu_cs_submit(&parser, cs);
 
 out:

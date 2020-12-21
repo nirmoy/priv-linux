@@ -573,6 +573,7 @@ int handle_guest_cmd(struct mdev_state *mdev_state)
 		}
 
 		key->gpu_addr = amdgpu_bo_gpu_offset(robj);
+		printk("AMDGPU_GUEST_CMD_IOCTL_GEM_CREATE %llu \n", key->gpu_addr);
 
 		r = amdgpu_bo_kmap(robj, &key->cpu_addr);
 		if (r) {

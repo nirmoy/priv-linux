@@ -156,8 +156,8 @@ int amdgpu_fence_emit(struct amdgpu_ring *ring, struct dma_fence **f,
 	amdgpu_ring_emit_fence(ring, ring->fence_drv.gpu_addr,
 			       seq, flags | AMDGPU_FENCE_FLAG_INT);
 	pm_runtime_get_noresume(adev_to_drm(adev)->dev);
-	printk("amdgpu_fence_emit %s fence sq %u\n", ring->name, seq);
 	ptr = &ring->fence_drv.fences[seq & ring->fence_drv.num_fences_mask];
+	printk("amdgpu_fence_emit %s fence sq %u ptr %p gpu addr %llu\n", ring->name, seq, *ptr, ring->fence_drv.gpu_addr);
 	if (unlikely(rcu_dereference_protected(*ptr, 1))) {
 		struct dma_fence *old;
 
