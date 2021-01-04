@@ -5804,6 +5804,7 @@ static int gfx_v9_0_eop_irq(struct amdgpu_device *adev,
 			/* Per-queue interrupt is supported for MEC starting from VI.
 			  * The interrupt can only be enabled/disabled per pipe instead of per queue.
 			  */
+			printk("gfx_v9_0_eop_irq %s\n", ring->name);
 			if ((ring->me == me_id) && (ring->pipe == pipe_id) && (ring->queue == queue_id))
 				amdgpu_fence_process(ring);
 		}

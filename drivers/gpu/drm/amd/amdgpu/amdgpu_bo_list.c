@@ -262,20 +262,17 @@ error_free:
 	return r;
 }
 
-int amdgpu_bo_list_ioctl(struct drm_device *dev, void *data,
-				struct drm_file *filp)
+int _amdgpu_bo_list_ioctl(struct drm_device *dev,
+			  struct drm_amdgpu_bo_list_entry *info,
+			  union drm_amdgpu_bo_list *args,
+			  struct drm_file *filp)
 {
 	struct amdgpu_device *adev = drm_to_adev(dev);
 	struct amdgpu_fpriv *fpriv = filp->driver_priv;
-	union drm_amdgpu_bo_list *args = data;
 	uint32_t handle = args->in.list_handle;
-	struct drm_amdgpu_bo_list_entry *info = NULL;
 	struct amdgpu_bo_list *list, *old;
 	int r;
 
-	r = amdgpu_bo_create_list_entry_array(&args->in, &info);
-	if (r)
-		return r;
 
 	switch (args->in.operation) {
 	case AMDGPU_BO_LIST_OP_CREATE:
@@ -334,4 +331,22 @@ error_put_list:
 error_free:
 	kvfree(info);
 	return r;
+}
+
+int amdgpu_bo_list_ioctl(struct drm_device *dev, void *data,
+				struct drm_file *filp)
+{
+	union drm_amdgpu_bo_list *args = data;
+	struct drm_amdgpu_bo_list_entry *info = NULL;
+	int r;
+
+	r = amdgpu_bo_create_list_entry_array(&args->in, &info);
+	if (r)
+		return r;
+
+	r = _amdgpu_bo_list_ioctl(dev, info, args, filp);
+	kvfree(info);
+
+	return r;
+
 }

@@ -251,6 +251,7 @@ int amdgpu_bo_create_reserved(struct amdgpu_device *adev,
 
 	if (!*bo_ptr) {
 		r = amdgpu_bo_create(adev, &bp, bo_ptr);
+		printk("creating bo\n");
 		if (r) {
 			dev_err(adev->dev, "(%d) failed to allocate kernel bo\n",
 				r);

@@ -689,6 +689,9 @@ static unsigned long amdgpu_ttm_io_mem_pfn(struct ttm_buffer_object *bo,
 	uint64_t offset = (page_offset << PAGE_SHIFT);
 	struct drm_mm_node *mm;
 
+	printk("amdgpu_ttm_io_mem_pfn %p\n", bo);
+	printk("amdgpu_ttm_io_mem_pfn %p\n", &bo->mem);
+	printk("amdgpu_ttm_io_mem_pfn %p\n", bo->mem.mm_node);
 	mm = amdgpu_find_mm_node(&bo->mem, &offset);
 	offset += adev->gmc.aper_base;
 	return mm->start + (offset >> PAGE_SHIFT);
@@ -1696,7 +1699,7 @@ static void amdgpu_ttm_training_data_block_init(struct amdgpu_device *adev)
 		(adev->gmc.mc_vram_size - GDDR6_MEM_TRAINING_OFFSET);
 	ctx->train_data_size =
 		GDDR6_MEM_TRAINING_DATA_SIZE_IN_BYTES;
-	
+
 	DRM_DEBUG("train_data_size:%llx,p2c_train_data_offset:%llx,c2p_train_data_offset:%llx.\n",
 			ctx->train_data_size,
 			ctx->p2c_train_data_offset,

@@ -164,6 +164,9 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 		return -EINVAL;
 	}
 
+	if (job)
+		printk("amdgpu_ib_schedule %u vmid \n", job->vmid);
+
 	if ((ib->flags & AMDGPU_IB_FLAGS_SECURE) &&
 	    (ring->funcs->type == AMDGPU_RING_TYPE_COMPUTE)) {
 		dev_err(adev->dev, "secure submissions not supported on compute rings\n");
@@ -276,7 +279,7 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 		amdgpu_ring_emit_fence(ring, job->uf_addr, job->uf_sequence,
 				       fence_flags | AMDGPU_FENCE_FLAG_64BIT);
 	}
-
+	printk("amdgpu_ib_schedule --> amdgpu_fence_emit\n");
 	r = amdgpu_fence_emit(ring, f, fence_flags);
 	if (r) {
 		dev_err(adev->dev, "failed to emit fence (%d)\n", r);
@@ -292,9 +295,11 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 	if (patch_offset != ~0 && ring->funcs->patch_cond_exec)
 		amdgpu_ring_patch_cond_exec(ring, patch_offset);
 
+	printk("ctx %llu %llu\n", ring->current_ctx, fence_ctx);
 	ring->current_ctx = fence_ctx;
 	if (vm && ring->funcs->emit_switch_buffer)
 		amdgpu_ring_emit_switch_buffer(ring);
+	printk("commiting %s %llu\n", ring->name, (*f)->seqno);
 	amdgpu_ring_commit(ring);
 	return 0;
 }

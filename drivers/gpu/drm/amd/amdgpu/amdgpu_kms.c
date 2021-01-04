@@ -475,6 +475,7 @@ static int amdgpu_hw_ip_info(struct amdgpu_device *adev,
 	return 0;
 }
 
+int _amdgpu_info_ioctl(struct drm_device *dev, struct drm_amdgpu_info *info, struct drm_file *filp, void* out);
 /*
  * Userspace get information ioctl
  */
@@ -492,10 +493,23 @@ static int amdgpu_hw_ip_info(struct amdgpu_device *adev,
  */
 int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 {
-	struct amdgpu_device *adev = drm_to_adev(dev);
+	int ret;
 	struct drm_amdgpu_info *info = data;
-	struct amdgpu_mode_info *minfo = &adev->mode_info;
 	void __user *out = (void __user *)(uintptr_t)info->return_pointer;
+
+	void *kern_out = kvmalloc(info->return_size, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+	ret = _amdgpu_info_ioctl(dev, info, filp, kern_out);
+	if (ret)
+		return ret;
+	return copy_to_user(out, kern_out, info->return_size) ? -EFAULT : 0;
+
+}
+int _amdgpu_info_ioctl(struct drm_device *dev, struct drm_amdgpu_info *info, struct drm_file *filp, void* out)
+{
+	struct amdgpu_device *adev = drm_to_adev(dev);
+	struct amdgpu_mode_info *minfo = &adev->mode_info;
 	uint32_t size = info->return_size;
 	struct drm_crtc *crtc;
 	uint32_t ui32 = 0;
@@ -509,7 +523,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	switch (info->query) {
 	case AMDGPU_INFO_ACCEL_WORKING:
 		ui32 = adev->accel_working;
-		return copy_to_user(out, &ui32, min(size, 4u)) ? -EFAULT : 0;
+		memcpy(out, &ui32, min(size, 4u));
+		return 0;
 	case AMDGPU_INFO_CRTC_FROM_ID:
 		for (i = 0, found = 0; i < adev->mode_info.num_crtc; i++) {
 			crtc = (struct drm_crtc *)minfo->crtcs[i];
@@ -524,7 +539,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 			DRM_DEBUG_KMS("unknown crtc id %d\n", info->mode_crtc.id);
 			return -EINVAL;
 		}
-		return copy_to_user(out, &ui32, min(size, 4u)) ? -EFAULT : 0;
+		memcpy(out, &ui32, min(size, 4u));
+		return 0;
 	case AMDGPU_INFO_HW_IP_INFO: {
 		struct drm_amdgpu_info_hw_ip ip = {};
 		int ret;
@@ -533,8 +549,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		if (ret)
 			return ret;
 
-		ret = copy_to_user(out, &ip, min((size_t)size, sizeof(ip)));
-		return ret ? -EFAULT : 0;
+		memcpy(out, &ip, min((size_t)size, sizeof(ip)));
+		return 0;
 	}
 	case AMDGPU_INFO_HW_IP_COUNT: {
 		enum amd_ip_block_type type;
@@ -577,11 +593,13 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 			    count < AMDGPU_HW_IP_INSTANCE_MAX_COUNT)
 				count++;
 
-		return copy_to_user(out, &count, min(size, 4u)) ? -EFAULT : 0;
+		memcpy(out, &count, min(size, 4u));
+		return 0;
 	}
 	case AMDGPU_INFO_TIMESTAMP:
 		ui64 = amdgpu_gfx_get_gpu_clock_counter(adev);
-		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
+		memcpy(out, &ui64, min(size, 8u));
+		return 0;
 	case AMDGPU_INFO_FW_VERSION: {
 		struct drm_amdgpu_info_firmware fw_info;
 		int ret;
@@ -594,27 +612,33 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		if (ret)
 			return ret;
 
-		return copy_to_user(out, &fw_info,
-				    min((size_t)size, sizeof(fw_info))) ? -EFAULT : 0;
+		memcpy(out, &fw_info, min((size_t)size, sizeof(fw_info)));
+		return 0;
 	}
 	case AMDGPU_INFO_NUM_BYTES_MOVED:
 		ui64 = atomic64_read(&adev->num_bytes_moved);
-		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
+		memcpy(out, &ui64, min(size, 8u));
+		return 0;
 	case AMDGPU_INFO_NUM_EVICTIONS:
 		ui64 = atomic64_read(&adev->num_evictions);
-		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
+		memcpy(out, &ui64, min(size, 8u));
+		return 0;
 	case AMDGPU_INFO_NUM_VRAM_CPU_PAGE_FAULTS:
 		ui64 = atomic64_read(&adev->num_vram_cpu_page_faults);
-		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
+		memcpy(out, &ui64, min(size, 8u));
+		return 0;
 	case AMDGPU_INFO_VRAM_USAGE:
 		ui64 = amdgpu_vram_mgr_usage(ttm_manager_type(&adev->mman.bdev, TTM_PL_VRAM));
-		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
+		memcpy(out, &ui64, min(size, 8u));
+		return 0;
 	case AMDGPU_INFO_VIS_VRAM_USAGE:
 		ui64 = amdgpu_vram_mgr_vis_usage(ttm_manager_type(&adev->mman.bdev, TTM_PL_VRAM));
-		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
+		memcpy(out, &ui64, min(size, 8u));
+		return 0;
 	case AMDGPU_INFO_GTT_USAGE:
 		ui64 = amdgpu_gtt_mgr_usage(ttm_manager_type(&adev->mman.bdev, TTM_PL_TT));
-		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
+		memcpy(out, &ui64, min(size, 8u));
+		return 0;
 	case AMDGPU_INFO_GDS_CONFIG: {
 		struct drm_amdgpu_info_gds gds_info;
 
@@ -623,8 +647,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		gds_info.gds_total_size = adev->gds.gds_size;
 		gds_info.gws_per_compute_partition = adev->gds.gws_size;
 		gds_info.oa_per_compute_partition = adev->gds.oa_size;
-		return copy_to_user(out, &gds_info,
-				    min((size_t)size, sizeof(gds_info))) ? -EFAULT : 0;
+		memcpy(out, &gds_info, min((size_t)size, sizeof(gds_info)));
+		return 0;
 	}
 	case AMDGPU_INFO_VRAM_GTT: {
 		struct drm_amdgpu_info_vram_gtt vram_gtt;
@@ -639,8 +663,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		vram_gtt.gtt_size = ttm_manager_type(&adev->mman.bdev, TTM_PL_TT)->size;
 		vram_gtt.gtt_size *= PAGE_SIZE;
 		vram_gtt.gtt_size -= atomic64_read(&adev->gart_pin_size);
-		return copy_to_user(out, &vram_gtt,
-				    min((size_t)size, sizeof(vram_gtt))) ? -EFAULT : 0;
+		memcpy(out, &vram_gtt, min((size_t)size, sizeof(vram_gtt)));
+		return 0;
 	}
 	case AMDGPU_INFO_MEMORY: {
 		struct drm_amdgpu_memory_info mem;
@@ -676,9 +700,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 			amdgpu_gtt_mgr_usage(gtt_man);
 		mem.gtt.max_allocation = mem.gtt.usable_heap_size * 3 / 4;
 
-		return copy_to_user(out, &mem,
-				    min((size_t)size, sizeof(mem)))
-				    ? -EFAULT : 0;
+		memcpy(out, &mem, min((size_t)size, sizeof(mem)));
+		return 0;
 	}
 	case AMDGPU_INFO_READ_MMR_REG: {
 		unsigned n, alloc_size;
@@ -722,9 +745,9 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 			}
 		}
 		amdgpu_gfx_off_ctrl(adev, true);
-		n = copy_to_user(out, regs, min(size, alloc_size));
+		memcpy(out, regs, min(size, alloc_size));
 		kfree(regs);
-		return n ? -EFAULT : 0;
+		return 0;
 	}
 	case AMDGPU_INFO_DEV_INFO: {
 		struct drm_amdgpu_info_device *dev_info;
@@ -809,7 +832,7 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 
 		dev_info->tcc_disabled_mask = adev->gfx.config.tcc_disabled_mask;
 
-		ret = copy_to_user(out, dev_info,
+		ret = memcpy(out, dev_info,
 				   min((size_t)size, sizeof(*dev_info))) ? -EFAULT : 0;
 		kfree(dev_info);
 		return ret;
@@ -829,17 +852,16 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 			}
 		}
 
-		return copy_to_user(out, &vce_clk_table,
-				    min((size_t)size, sizeof(vce_clk_table))) ? -EFAULT : 0;
+		memcpy(out, &vce_clk_table, min((size_t)size, sizeof(vce_clk_table)));
+		return  0;
 	}
 	case AMDGPU_INFO_VBIOS: {
 		uint32_t bios_size = adev->bios_size;
 
 		switch (info->vbios_info.type) {
 		case AMDGPU_INFO_VBIOS_SIZE:
-			return copy_to_user(out, &bios_size,
-					min((size_t)size, sizeof(bios_size)))
-					? -EFAULT : 0;
+			memcpy(out, &bios_size, min((size_t)size, sizeof(bios_size)));
+			return 0;
 		case AMDGPU_INFO_VBIOS_IMAGE: {
 			uint8_t *bios;
 			uint32_t bios_offset = info->vbios_info.offset;
@@ -848,9 +870,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 				return -EINVAL;
 
 			bios = adev->bios + bios_offset;
-			return copy_to_user(out, bios,
-					    min((size_t)size, (size_t)(bios_size - bios_offset)))
-					? -EFAULT : 0;
+			memcpy(out, bios,min((size_t)size, (size_t)(bios_size - bios_offset)));
+			return 0;
 		}
 		default:
 			DRM_DEBUG_KMS("Invalid request %d\n",
@@ -868,8 +889,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 				handle.uvd_max_handles = adev->uvd.max_handles;
 				handle.uvd_used_handles = amdgpu_uvd_used_handles(adev);
 
-				return copy_to_user(out, &handle,
-					min((size_t)size, sizeof(handle))) ? -EFAULT : 0;
+				memcpy(out, &handle, min((size_t)size, sizeof(handle)));
+				return 0;
 			} else {
 				return -ENODATA;
 			}
@@ -966,11 +987,13 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 				      info->sensor_info.type);
 			return -EINVAL;
 		}
-		return copy_to_user(out, &ui32, min(size, 4u)) ? -EFAULT : 0;
+		memcpy(out, &ui32, min(size, 4u));
+		return 0;
 	}
 	case AMDGPU_INFO_VRAM_LOST_COUNTER:
 		ui32 = atomic_read(&adev->vram_lost_counter);
-		return copy_to_user(out, &ui32, min(size, 4u)) ? -EFAULT : 0;
+		memcpy(out, &ui32, min(size, 4u));
+		return 0;
 	case AMDGPU_INFO_RAS_ENABLED_FEATURES: {
 		struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
 		uint64_t ras_mask;
@@ -979,9 +1002,8 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 			return -EINVAL;
 		ras_mask = (uint64_t)ras->supported << 32 | ras->features;
 
-		return copy_to_user(out, &ras_mask,
-				min_t(u64, size, sizeof(ras_mask))) ?
-			-EFAULT : 0;
+		memcpy(out, &ras_mask, min_t(u64, size, sizeof(ras_mask)));
+		return 0;
 	}
 	default:
 		DRM_DEBUG_KMS("Invalid request %d\n", info->query);

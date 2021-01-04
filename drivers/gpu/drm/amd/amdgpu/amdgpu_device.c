@@ -65,6 +65,7 @@
 #include "amdgpu_ras.h"
 #include "amdgpu_pmu.h"
 #include "amdgpu_fru_eeprom.h"
+#include "amdgpu_mdev.h"
 
 #include <linux/suspend.h>
 #include <drm/task_barrier.h>
@@ -3555,6 +3556,8 @@ fence_driver_init:
 	if (amdgpu_device_cache_pci_state(adev->pdev))
 		pci_restore_state(pdev);
 
+	amdgpu_mdev_init(adev);
+
 	return 0;
 
 failed:
@@ -3593,6 +3596,7 @@ void amdgpu_device_fini(struct amdgpu_device *adev)
 		amdgpu_virt_fini_data_exchange(adev);
 	}
 
+	amdgpu_mdev_exit();
 	/* disable all interrupts */
 	amdgpu_irq_disable_all(adev);
 	if (adev->mode_info.mode_config_initialized){

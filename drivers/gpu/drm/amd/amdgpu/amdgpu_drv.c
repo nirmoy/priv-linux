@@ -43,6 +43,7 @@
 #include "amdgpu_sched.h"
 
 #include "amdgpu_amdkfd.h"
+#include "amdgpu_mdev.h"
 
 #include "amdgpu_ras.h"
 
@@ -161,6 +162,7 @@ int amdgpu_force_asic_type = -1;
 int amdgpu_tmz;
 int amdgpu_reset_method = -1; /* auto */
 int amdgpu_num_kcq = -1;
+int amdgpu_mdev = 0;
 
 struct amdgpu_mgpu_info mgpu_info = {
 	.mutex = __MUTEX_INITIALIZER(mgpu_info.mutex),
@@ -807,6 +809,10 @@ module_param_named(bad_page_threshold, amdgpu_bad_page_threshold, int, 0444);
 MODULE_PARM_DESC(num_kcq, "number of kernel compute queue user want to setup (8 if set to greater than 8 or less than 0, only affect gfx 8+)");
 module_param_named(num_kcq, amdgpu_num_kcq, int, 0444);
 
+MODULE_PARM_DESC(mdev, "Enable mdev");
+module_param_named(mdev, amdgpu_mdev, int, 0444);
+
+
 static const struct pci_device_id pciidlist[] = {
 #ifdef  CONFIG_DRM_AMDGPU_SI
 	{0x1002, 0x6780, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_TAHITI},
@@ -1129,6 +1135,8 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
 	int ret, retry = 0;
 	bool supports_atomic = false;
 
+	if (amdgpu_mdev)
+		return amdgpu_mdev_pci_probe(pdev, ent);
 	if (!amdgpu_virtual_display &&
 	    amdgpu_device_asic_has_dc_support(flags & AMD_ASIC_MASK))
 		supports_atomic = true;

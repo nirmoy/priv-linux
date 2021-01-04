@@ -687,16 +687,20 @@ int amdgpu_vm_validate_pt_bos(struct amdgpu_device *adev, struct amdgpu_vm *vm,
 
 	vm->bulk_moveable &= list_empty(&vm->evicted);
 
+	printk("amdgpu_vm_validate_pt_bos 1\n");
 	list_for_each_entry_safe(bo_base, tmp, &vm->evicted, vm_status) {
 		struct amdgpu_bo *bo = bo_base->bo;
+		printk("amdgpu_vm_validate_pt_bos 2\n");
 
 		r = validate(param, bo);
 		if (r)
 			return r;
 
 		if (bo->tbo.type != ttm_bo_type_kernel) {
+			printk("amdgpu_vm_validate_pt_bos 3\n");
 			amdgpu_vm_bo_moved(bo_base);
 		} else {
+			printk("amdgpu_vm_validate_pt_bos 4\n");
 			vm->update_funcs->map_table(bo);
 			amdgpu_vm_bo_relocated(bo_base);
 		}
@@ -1126,6 +1130,7 @@ int amdgpu_vm_flush(struct amdgpu_ring *ring, struct amdgpu_job *job,
 		amdgpu_gmc_emit_pasid_mapping(ring, job->vmid, job->pasid);
 
 	if (vm_flush_needed || pasid_mapping_needed) {
+		printk("amdgpu_vm_flush --> amdgpu_fence_emit\n");
 		r = amdgpu_fence_emit(ring, &fence, 0);
 		if (r)
 			return r;
