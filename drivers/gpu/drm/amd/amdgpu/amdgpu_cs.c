@@ -845,6 +845,7 @@ static int amdgpu_mdev_cs_parser_bos(struct amdgpu_cs_parser *p,
 				       &p->bo_list);
 		if (r)
 			return r;
+		printk("amdgpu_mdev_cs_parser_bos found bo_list handle %u\n", cs->in.bo_list_handle);
 	} else if (!p->bo_list) {
 		/* Create a empty bo_list when no handle is provided */
 		r = amdgpu_bo_list_create(p->adev, p->filp, NULL, 0,
@@ -1647,7 +1648,7 @@ int amdgpu_mdev_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 	printk(" before amdgpu_cs_submit");
 	ring = to_amdgpu_ring(parser.entity->rq->sched);
 	printk(" before amdgpu_cs_submit %s %s\n", ring->name, parser.entity->rq->sched->name);
-//r =amdgpu_job_submit_direct(parser.job, ring, &parser.fence);
+	//r =amdgpu_job_submit_direct(parser.job, ring, &parser.fence);
 	r = amdgpu_cs_submit(&parser, cs);
 
 out:

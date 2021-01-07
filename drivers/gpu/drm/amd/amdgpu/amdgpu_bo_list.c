@@ -321,6 +321,7 @@ int _amdgpu_bo_list_ioctl(struct drm_device *dev,
 
 	memset(args, 0, sizeof(*args));
 	args->out.list_handle = handle;
+	printk("_amdgpu_bo_list_ioctl handle %u", handle);
 	kvfree(info);
 
 	return 0;
@@ -345,7 +346,6 @@ int amdgpu_bo_list_ioctl(struct drm_device *dev, void *data,
 		return r;
 
 	r = _amdgpu_bo_list_ioctl(dev, info, args, filp);
-	kvfree(info);
 
 	return r;
 

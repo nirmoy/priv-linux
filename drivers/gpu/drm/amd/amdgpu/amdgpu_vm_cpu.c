@@ -76,6 +76,7 @@ static int amdgpu_vm_cpu_update(struct amdgpu_vm_update_params *p,
 	uint64_t value;
 	int r;
 
+	printk("amdgpu_vm_cpu_update addr %llu count %u\n", addr, count);
 	if (bo->tbo.moving) {
 		r = dma_fence_wait(bo->tbo.moving, true);
 		if (r)

@@ -207,6 +207,8 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 	uint64_t *pte;
 	int r;
 
+	dump_stack();
+	printk("amdgpu_vm_sdma_update addr %llu count %u\n", addr, count);
 	/* Wait for PD/PT moves to be completed */
 	r = amdgpu_sync_fence(&p->job->sync, bo->tbo.moving);
 	if (r)

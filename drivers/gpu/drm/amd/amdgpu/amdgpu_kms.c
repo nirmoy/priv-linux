@@ -498,11 +498,15 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	void __user *out = (void __user *)(uintptr_t)info->return_pointer;
 
 	void *kern_out = kvmalloc(info->return_size, GFP_KERNEL);
-	if (!out)
+	if (!out) {
+		printk("returning here 1\n");
 		return -ENOMEM;
+	}
 	ret = _amdgpu_info_ioctl(dev, info, filp, kern_out);
-	if (ret)
+	if (ret) {
+		printk("returning here 2 %d \n", ret);
 		return ret;
+	}
 	return copy_to_user(out, kern_out, info->return_size) ? -EFAULT : 0;
 
 }
@@ -517,11 +521,13 @@ int _amdgpu_info_ioctl(struct drm_device *dev, struct drm_amdgpu_info *info, str
 	int i, found;
 	int ui32_size = sizeof(ui32);
 
+	printk("here 0\n");
 	if (!info->return_size || !info->return_pointer)
 		return -EINVAL;
-
+	printk("here 1 %u\n", info->query);
 	switch (info->query) {
 	case AMDGPU_INFO_ACCEL_WORKING:
+		printk("here 2\n");
 		ui32 = adev->accel_working;
 		memcpy(out, &ui32, min(size, 4u));
 		return 0;
@@ -832,10 +838,9 @@ int _amdgpu_info_ioctl(struct drm_device *dev, struct drm_amdgpu_info *info, str
 
 		dev_info->tcc_disabled_mask = adev->gfx.config.tcc_disabled_mask;
 
-		ret = memcpy(out, dev_info,
-				   min((size_t)size, sizeof(*dev_info))) ? -EFAULT : 0;
+		memcpy(out, dev_info,min((size_t)size, sizeof(*dev_info)));
 		kfree(dev_info);
-		return ret;
+		return 0;
 	}
 	case AMDGPU_INFO_VCE_CLOCK_TABLE: {
 		unsigned i;

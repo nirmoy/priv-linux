@@ -222,7 +222,7 @@ static int amdgpu_mdev_bo_list_ioctl(struct drm_device *dev, void *data, struct 
 		printk("timed out \n");
 	ret = sizeof(cmd);
 	memcpy(data, amdgpu_dev_mdev.bar0_base + ret, sizeof(union drm_amdgpu_bo_list));
-	printk("done AMDGPU_GUEST_CMD_IOCTL_BO_LIST \n");
+	printk("done AMDGPU_GUEST_CMD_IOCTL_BO_LIST handle %u\n", args->out.list_handle);
 	return 0;
 
 }

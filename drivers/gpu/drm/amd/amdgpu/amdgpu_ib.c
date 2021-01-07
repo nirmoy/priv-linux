@@ -259,6 +259,7 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 			}
 		}
 
+		printk("ib->ptr %p gpu_addr %llu flags %u", ib->ptr, ib->gpu_addr, ib->flags);
 		amdgpu_ring_emit_ib(ring, job, ib, status);
 		status &= ~AMDGPU_HAVE_CTX_SWITCH;
 	}
