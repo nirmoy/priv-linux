@@ -3394,11 +3394,54 @@ static void gfx_v9_0_mqd_set_priority(struct amdgpu_ring *ring, struct v9_mqd *m
 		if (amdgpu_gfx_is_high_priority_compute_queue(adev,
 							      ring->pipe,
 							      ring->queue)) {
-			mqd->cp_hqd_pipe_priority = AMDGPU_GFX_PIPE_PRIO_HIGH;
+			mqd->cp_hqd_pipe_priority = 0;
 			mqd->cp_hqd_queue_priority =
 				AMDGPU_GFX_QUEUE_PRIORITY_MAXIMUM;
+			printk("gfx_v9_0_mqd_set_priority %s%u\n", ring->name, mqd->compute_resource_limits);
 		}
 	}
+}
+
+static void gfx_v9_0_init_arb(struct amdgpu_device *adev)
+{
+       u32 tmp;
+
+       mutex_lock(&adev->grbm_idx_mutex);
+       /*
+        * making sure that the following register writes will be broadcasted
+        * to all the shaders
+        */
+       WREG32_SOC15(GC, 0, mmCP_ME0_PIPE0_PRIORITY, 0x0304e);
+       WREG32_SOC15(GC, 0, mmCP_ME0_PIPE1_PRIORITY, 0x0304e);
+       gfx_v9_0_select_se_sh(adev, 0xffffffff, 0xffffffff, 0xffffffff);
+
+       tmp = RREG32_SOC15(GC, 0, mmSPI_ARB_CYCLES_0);
+       printk("gfx_v10_0_constants_init mmSPI_ARB_CYCLES_0 %x\n", tmp);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_CYCLES_0, TS0_DURATION, 16);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_CYCLES_0, TS1_DURATION, 16);
+       WREG32_SOC15(GC, 0, mmSPI_ARB_CYCLES_0, tmp);
+
+       tmp = RREG32_SOC15(GC, 0, mmSPI_ARB_CYCLES_1);
+       printk("gfx_v10_0_constants_init mmSPI_ARB_CYCLES_1 %x\n", tmp);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_CYCLES_1, TS2_DURATION, 16);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_CYCLES_1, TS3_DURATION, 16);
+       WREG32_SOC15(GC, 0, mmSPI_ARB_CYCLES_1, tmp);
+
+       tmp = RREG32_SOC15(GC, 0, mmSPI_ARB_PRIORITY);
+       printk("gfx_v10_0_constants_init mmSPI_ARB_PRIORITY %x\n", tmp);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_PRIORITY, PIPE_ORDER_TS0, 2);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_PRIORITY, PIPE_ORDER_TS1, 2);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_PRIORITY, PIPE_ORDER_TS2, 2);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_PRIORITY, PIPE_ORDER_TS3, 2);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_PRIORITY, TS0_DUR_MULT, 0);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_PRIORITY, TS1_DUR_MULT, 0);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_PRIORITY, TS2_DUR_MULT, 0);
+       tmp = REG_SET_FIELD(tmp, SPI_ARB_PRIORITY, TS3_DUR_MULT, 0);
+       WREG32_SOC15(GC, 0, mmSPI_ARB_PRIORITY, tmp);
+
+       mutex_unlock(&adev->grbm_idx_mutex);
+
+
 }
 
 static int gfx_v9_0_mqd_init(struct amdgpu_ring *ring)
@@ -3414,10 +3457,6 @@ static int gfx_v9_0_mqd_init(struct amdgpu_ring *ring)
 	mqd->compute_static_thread_mgmt_se1 = 0xffffffff;
 	mqd->compute_static_thread_mgmt_se2 = 0xffffffff;
 	mqd->compute_static_thread_mgmt_se3 = 0xffffffff;
-	mqd->compute_static_thread_mgmt_se4 = 0xffffffff;
-	mqd->compute_static_thread_mgmt_se5 = 0xffffffff;
-	mqd->compute_static_thread_mgmt_se6 = 0xffffffff;
-	mqd->compute_static_thread_mgmt_se7 = 0xffffffff;
 	mqd->compute_misc_reserved = 0x00000003;
 
 	mqd->dynamic_cu_mask_addr_lo =
@@ -3540,13 +3579,13 @@ static int gfx_v9_0_mqd_init(struct amdgpu_ring *ring)
 	/* set static priority for a queue/ring */
 	gfx_v9_0_mqd_set_priority(ring, mqd);
 	mqd->cp_hqd_quantum = RREG32(mmCP_HQD_QUANTUM);
-
+	printk("%s pipe %u queue %u\n", ring->name, mqd->cp_hqd_pipe_priority, mqd->cp_hqd_queue_priority);
 	/* map_queues packet doesn't need activate the queue,
 	 * so only kiq need set this field.
 	 */
 	if (ring->funcs->type == AMDGPU_RING_TYPE_KIQ)
 		mqd->cp_hqd_active = 1;
-
+	//gfx_v9_0_init_arb(adev);
 	return 0;
 }
 
@@ -5232,7 +5271,6 @@ static void gfx_v9_0_ring_emit_ib_gfx(struct amdgpu_ring *ring,
 {
 	unsigned vmid = AMDGPU_JOB_GET_VMID(job);
 	u32 header, control = 0;
-
 	if (ib->flags & AMDGPU_IB_FLAG_CE)
 		header = PACKET3(PACKET3_INDIRECT_BUFFER_CONST, 2);
 	else
@@ -6870,6 +6908,54 @@ static void gfx_v9_0_set_rlc_funcs(struct amdgpu_device *adev)
 	default:
 		break;
 	}
+}
+
+static void gfx_v9_0_write_data_to_reg_compute(struct amdgpu_ring *ring, int eng_sel,
+				       bool wc, uint32_t reg, uint32_t val)
+{
+	amdgpu_ring_write(ring, PACKET3_COMPUTE(PACKET3_WRITE_DATA, 3));
+	amdgpu_ring_write(ring, WRITE_DATA_ENGINE_SEL(0) |
+				WRITE_DATA_DST_SEL(0) |
+				WR_CONFIRM);
+	amdgpu_ring_write(ring, 0x11c7);
+	amdgpu_ring_write(ring, 0);
+	amdgpu_ring_write(ring, val);
+}
+
+void gfx_v9_0_set_wave_limit(struct amdgpu_ring *ring)
+{
+	uint32_t data;
+	uint32_t data1;
+	struct amdgpu_device *adev = ring->adev;
+	amdgpu_ring_emit_wreg(ring, SOC15_REG_OFFSET(
+                          GC, 0, mmSPI_WCL_PIPE_PERCENT_GFX), 0xf);
+
+#if 0
+	//gfx_v9_0_write_data_to_reg_compute(ring, 0, false, mmSPI_WCL_PIPE_PERCENT_HP3D, 0x07ffffff&(~0x7e));
+	data = RREG32_SOC15(GC, 0, mmSPI_WCL_PIPE_PERCENT_GFX);
+	amdgpu_ring_emit_wreg(ring, SOC15_REG_OFFSET(
+                          GC, 0, mmSPI_WCL_PIPE_PERCENT_GFX), 0x07fffff0);
+	//gfx_v9_0_write_data_to_reg_compute(ring, 0, true, mmSPI_WCL_PIPE_PERCENT_GFX, 0x07ffffff&(~0x7e));
+        //WREG32_SOC15(GC, 0, mmCP_ME0_PIPE0_PRIORITY, 0x0304e);
+        //WREG32_SOC15(GC, 0, mmCP_ME0_PIPE1_PRIORITY, 0x0304e);
+	RREG32_SOC15(GC, 0, mmSPI_WCL_PIPE_PERCENT_GFX);
+	RREG32_SOC15(GC, 0, mmSPI_WCL_PIPE_PERCENT_GFX);
+	data1 = RREG32_SOC15(GC, 0, mmSPI_WCL_PIPE_PERCENT_GFX);
+	//gfx_v9_0_write_data_to_reg_compute(ring, 0, false, mmSPI_SHADER_PGM_RSRC3_PS, 0x02c07);
+	//gfx_v9_0_write_data_to_reg_compute(ring, 0, false, mmSPI_WCL_PIPE_PERCENT_CS3, 0x0000007f);
+	//gfx_v9_0_write_data_to_reg_compute(ring, 0, false, mmCP_HQD_PIPE_PRIORITY , 0x0);
+	printk("gfx_v9_0_set_wave_limit %s %x --> %x\n", ring->name, data, data1);
+#endif
+
+ }
+
+void gfx_v9_0_reset_wave_limit(struct amdgpu_ring *ring)
+{
+	struct amdgpu_device *adev = ring->adev;
+	amdgpu_ring_emit_wreg(ring, SOC15_REG_OFFSET(
+                          GC, 0, mmSPI_WCL_PIPE_PERCENT_GFX), 1);
+
+
 }
 
 static void gfx_v9_0_set_gds_init(struct amdgpu_device *adev)

@@ -100,6 +100,9 @@ void amdgpu_ib_free(struct amdgpu_device *adev, struct amdgpu_ib *ib,
 	amdgpu_sa_bo_free(adev, &ib->sa_bo, f);
 }
 
+void gfx_v9_0_set_wave_limit(struct amdgpu_ring *ring);
+void gfx_v9_0_reset_wave_limit(struct amdgpu_ring *ring);
+//void gfx_v9_0_set_wave_limit_compute(struct amdgpu_ring *ring);
 /**
  * amdgpu_ib_schedule - schedule an IB (Indirect Buffer) on the ring
  *
@@ -237,6 +240,12 @@ int amdgpu_ib_schedule(struct amdgpu_ring *ring, unsigned num_ibs,
 		amdgpu_ring_emit_frame_cntl(ring, true, secure);
 	}
 
+	if (ring->funcs->type == AMDGPU_RING_TYPE_GFX)
+		gfx_v9_0_set_wave_limit(ring);
+#if 0
+	if (ring->funcs->type == AMDGPU_RING_TYPE_COMPUTE)
+		gfx_v9_0_set_wave_limit(ring);
+#endif
 	for (i = 0; i < num_ibs; ++i) {
 		ib = &ibs[i];
 
