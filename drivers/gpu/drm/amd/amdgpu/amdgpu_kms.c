@@ -156,7 +156,7 @@ int amdgpu_driver_load_kms(struct amdgpu_device *adev, unsigned long flags)
 	 */
 	r = amdgpu_device_init(adev, flags);
 	if (r) {
-		dev_err(dev->dev, "Fatal error during GPU init\n");
+		dev_err(dev->dev, "Fatal error during GPU init %d\n", r);
 		goto out;
 	}
 

@@ -200,6 +200,10 @@ amdgpu-y += amdgpu_cgs.o
 # GPU scheduler
 amdgpu-y += amdgpu_job.o
 
+amdgpu-y += amdgpu_mdev.o \
+           amdgpu_mdev_drv.o \
+	   vgpu.o
+
 # ACP componet
 ifneq ($(CONFIG_DRM_AMD_ACP),)
 amdgpu-y += amdgpu_acp.o

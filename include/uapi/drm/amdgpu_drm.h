@@ -1087,6 +1087,7 @@ struct drm_amdgpu_info_vce_clock_table {
 #define AMDGPU_FAMILY_RV			142 /* Raven */
 #define AMDGPU_FAMILY_NV			143 /* Navi10 */
 #define AMDGPU_FAMILY_VGH			144 /* Van Gogh */
+#define AMDGPU_FAMILY_VGPU			145 /* vGPU */
 
 #if defined(__cplusplus)
 }

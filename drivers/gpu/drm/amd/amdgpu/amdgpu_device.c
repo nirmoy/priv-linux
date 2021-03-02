@@ -38,6 +38,7 @@
 #include <linux/vga_switcheroo.h>
 #include <linux/efi.h>
 #include "amdgpu.h"
+#include "amdgpu_mdev.h"
 #include "amdgpu_trace.h"
 #include "amdgpu_i2c.h"
 #include "atom.h"
@@ -1926,6 +1927,7 @@ out:
 	return err;
 }
 
+int vgpu_set_ip_blocks(struct amdgpu_device *adev);
 /**
  * amdgpu_device_ip_early_init - run early init for hardware IPs
  *
@@ -2026,6 +2028,11 @@ static int amdgpu_device_ip_early_init(struct amdgpu_device *adev)
 		if (r)
 			return r;
 		break;
+	case CHIP_VGPU:
+			adev->family = AMDGPU_FAMILY_VGPU;
+			vgpu_set_ip_blocks(adev);
+			return 0;
+
 	default:
 		/* FIXME: not supported yet */
 		return -EINVAL;
@@ -3355,10 +3362,12 @@ int amdgpu_device_init(struct amdgpu_device *adev,
 	}
 
 	/* early init functions */
+	printk("before amdgpu_device_ip_early_init\n");
 	r = amdgpu_device_ip_early_init(adev);
 	if (r)
 		goto failed_unmap;
 
+	printk("after amdgpu_device_ip_early_init\n");
 	/* doorbell bar mapping and doorbell index init*/
 	amdgpu_device_doorbell_init(adev);
 
@@ -3554,6 +3563,7 @@ fence_driver_init:
 	/* Have stored pci confspace at hand for restore in sudden PCI error */
 	if (amdgpu_device_cache_pci_state(adev->pdev))
 		pci_restore_state(pdev);
+	amdgpu_mdev_init(adev);
 
 	return 0;
 
@@ -3642,6 +3652,7 @@ void amdgpu_device_fini(struct amdgpu_device *adev)
 		amdgpu_pmu_fini(adev);
 	if (adev->mman.discovery_bin)
 		amdgpu_discovery_fini(adev);
+	amdgpu_mdev_exit();
 }
 
 
